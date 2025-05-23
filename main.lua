@@ -34,7 +34,6 @@ FEATURES:
 
 KEYBOARD SHORTCUTS:
    - Shift: Multi-select images
-   - Control: Advanced scaling mode
    - 's': Switch to resize mode
    - 'r': Switch to rotate mode
 
