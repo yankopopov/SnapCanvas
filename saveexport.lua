@@ -7,38 +7,81 @@ local M = {}
 
 M.exportWorkspace = function(gatherImageData)
     local opts = {
-        title = "Export Workspace",
-        filter_patterns = "*.lua",
-        filter_description = "Lua Files",
+        title                 = "Export Workspace",
+        filter_patterns       = "*.lua",
+        filter_description    = "Lua Files",
         default_path_and_file = "image_data.lua",
     }
     local exportPath = myPlugin.saveFileDialog(opts)
-    if exportPath then
-        local imageData = gatherImageData()
-        local file = io.open(exportPath, "w")
-        if file then
-            file:write("return {\n")
-            for _, data in ipairs(imageData) do
-                file:write("    {\n")
-                file:write(string.format("        y = %f,\n", data.y))
-                file:write(string.format("        path = \"%s\",\n", "GFX/" .. Service.get_file_name(data.path)))
-                file:write(string.format("        name = \"%s\",\n", data.name))
-                file:write(string.format("        x = %f,\n", data.x))
-                file:write(string.format("        height = %f,\n", data.height))
-                file:write(string.format("        rotation = %d,\n", data.rotation))
-                file:write(string.format("        alpha = %f,\n", data.alpha))
-                file:write(string.format("        xScale = %f,\n", data.xScale))
-                file:write(string.format("        yScale = %f,\n", data.yScale))
-                file:write(string.format("        hierarchyIndex = %d,\n", data.hierarchyIndex))
-                file:write(string.format("        width = %f\n", data.width))
-                file:write("    },\n")
-            end
-            file:write("}\n")
-            file:close()
-        else
-            print("Error exporting file")
+    if not exportPath then return end
+
+    -- Gather current workspace data
+    local data       = gatherImageData()
+    local imagesList = data.images or {}
+
+    -- Determine export directory and create /GFX if necessary
+    local exportDir   = Service.getPath(exportPath)
+    local gfxDir      = exportDir .. "/GFX"
+    lfs.chdir(exportDir)  -- ensure mkdir runs in the right place
+    lfs.mkdir("GFX")      -- no‑op if already present
+
+    --------------------------------------------------------------------
+    -- utility: copy a file only if it is not already in the target dir
+    --------------------------------------------------------------------
+    local copied = {}     -- set to track duplicates
+    local function copyIntoGFX(absSourcePath)
+        if not absSourcePath then return end
+        local fname = Service.get_file_name(absSourcePath)
+        if copied[fname] then return end
+
+        local src = io.open(absSourcePath, "rb")
+        if not src then
+            print("Warning: could not open source image", absSourcePath)
+            return
         end
+        local dst = io.open(gfxDir .. "/" .. fname, "wb")
+        if not dst then
+            print("Warning: could not create destination image", fname)
+            src:close()
+            return
+        end
+        dst:write(src:read("*a"))
+        src:close(); dst:close()
+        copied[fname] = true
     end
+
+    -- 1️⃣  Copy all unique images into /GFX
+    for _, img in ipairs(imagesList) do
+        copyIntoGFX(img.path)
+    end
+
+    -- 2️⃣  Write image_data.lua
+    local file = io.open(exportPath, "w")
+    if not file then
+        print("Error exporting file")
+        return
+    end
+    file:write("return {\n")
+    for _, img in ipairs(imagesList) do
+        local fname = Service.get_file_name(img.path)
+        file:write("    {\n")
+        file:write(string.format("        path = \"GFX/%s\",\n", fname))
+        file:write(string.format("        name = \"%s\",\n", img.name))
+        file:write(string.format("        x = %f,\n", img.x))
+        file:write(string.format("        y = %f,\n", img.y))
+        file:write(string.format("        width = %f,\n", img.width))
+        file:write(string.format("        height = %f,\n", img.height))
+        file:write(string.format("        rotation = %d,\n", img.rotation))
+        file:write(string.format("        alpha = %f,\n", img.alpha))
+        file:write(string.format("        xScale = %f,\n", img.xScale))
+        file:write(string.format("        yScale = %f,\n", img.yScale))
+        file:write(string.format("        hierarchyIndex = %d,\n", img.hierarchyIndex))
+        file:write("    },\n")
+    end
+    file:write("}\n")
+    file:close()
+
+    native.showAlert("Export complete", "Workspace exported alongside copied GFX folder.")
 end
 
 M.saveWorkspace = function(gatherImageData)

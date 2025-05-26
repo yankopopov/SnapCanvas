@@ -188,10 +188,13 @@ M.createTextField = function(x, y, width, height, parentGroup)
 end
 
 M.setButtonTint = function(button, isSelected)
+    -- Guard against nil button reference
+    if not button then return end
+
     if isSelected then
-        button:setFillColor(1, 0.6, 0) -- Red tint
+        button:setFillColor(1, 0.6, 0) -- Orange tint
     else
-        button:setFillColor(1, 1, 1) -- Neutral tint
+        button:setFillColor(1, 1, 1)   -- Neutral tint
     end
 end
 

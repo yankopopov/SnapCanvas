@@ -33,7 +33,7 @@ FEATURES:
    - Multi-select images with shift key for group operations
 
 KEYBOARD SHORTCUTS:
-   - Shift: Multi-select images
+   - Shift-click: Multi-select images
    - 's': Switch to resize mode
    - 'r': Switch to rotate mode
 
@@ -69,7 +69,11 @@ local removeHandles, showHandles, updateHandles, updateTextColors, moveImageUp,
     moveImageToTop, moveImageToBottom, saveWorkspace, loadWorkspace,
     updateImageListOrde, exportWorkspace, gatherImageData, clearWorkspace,
     imageTouch, addImageToList, reorderImageGroup, selectResize,
-    selectRotate, startPanX, startPanY, LoadFileFunction, addPendingFile, nextStep
+    selectRotate, startPanX, startPanY, LoadFileFunction, addPendingFile, nextStep,
+    alignVerticalBottomGroup, alignVerticalTopGroup, alignVerticalCenterGroup,
+    alignHorizontalLeftGroup, alignHorizontalRightGroup, alignHorizontalCenterGroup,
+    ButtonPan, ButtonRotate, ButtonResize
+
 local images = {}
 local handles = {}
 local resizeHandles = {}
@@ -180,7 +184,6 @@ end)
 PropertiesRotationinput:addEventListener("userInput", function(event)
     handleInput(event, "rotation")
 end)
-
 
 local function updateParameters()
     if panelVisible == false then
@@ -391,6 +394,8 @@ local function onButtonRotateTouch(event)
     return true
 end
 local function onButtonPanTouch(event)
+    print("onButtonPanTouch")
+    print(selectedButton)
     if event.phase == "ended" then
         if selectedButton == "pan" then
             selectedButton = nil
@@ -458,6 +463,55 @@ local function initializeImageOrder()
     end
 end
 ----------------------------------------------------------------
+-- Alignment helpers (work with multi-select)
+----------------------------------------------------------------
+local function getSelectedImagesList()
+    local list = {}
+    for img,_ in pairs(multiSelectedImages) do list[#list+1] = img end
+    if #list == 0 and selectedImage then list[1] = selectedImage end
+    return list
+end
+
+alignVerticalBottomGroup = function()
+    local sel=getSelectedImagesList(); if #sel<2 then return end
+    local target=-1e9; for _,img in ipairs(sel) do target=math.max(target,img.y+img.height/2) end
+    for _,img in ipairs(sel) do img.y=target-img.height/2; if img.outline then img.outline.y=img.y end end
+    updateHandles()
+end
+alignVerticalTopGroup = function()
+    local sel=getSelectedImagesList(); if #sel<2 then return end
+    local target=1e9; for _,img in ipairs(sel) do target=math.min(target,img.y-img.height/2) end
+    for _,img in ipairs(sel) do img.y=target+img.height/2; if img.outline then img.outline.y=img.y end end
+    updateHandles()
+end
+alignVerticalCenterGroup = function()
+    local sel=getSelectedImagesList(); if #sel<2 then return end
+    local sum=0; for _,img in ipairs(sel) do sum=sum+img.y end
+    local target=sum/#sel
+    for _,img in ipairs(sel) do img.y=target; if img.outline then img.outline.y=img.y end end
+    updateHandles()
+end
+alignHorizontalLeftGroup = function()
+    local sel=getSelectedImagesList(); if #sel<2 then return end
+    local target=1e9; for _,img in ipairs(sel) do target=math.min(target,img.x-img.width/2) end
+    for _,img in ipairs(sel) do img.x=target+img.width/2; if img.outline then img.outline.x=img.x end end
+    updateHandles()
+end
+alignHorizontalRightGroup = function()
+    local sel=getSelectedImagesList(); if #sel<2 then return end
+    local target=-1e9; for _,img in ipairs(sel) do target=math.max(target,img.x+img.width/2) end
+    for _,img in ipairs(sel) do img.x=target-img.width/2; if img.outline then img.outline.x=img.x end end
+    updateHandles()
+end
+alignHorizontalCenterGroup = function()
+    local sel=getSelectedImagesList(); if #sel<2 then return end
+    local sum=0; for _,img in ipairs(sel) do sum=sum+img.x end
+    local target=sum/#sel
+    for _,img in ipairs(sel) do img.x=target; if img.outline then img.outline.x=img.x end end
+    updateHandles()
+end
+
+----------------------------------------------------------------
 -- Pending-file list helpers
 ----------------------------------------------------------------
 local function addPendingFile(filePath)
@@ -477,7 +531,7 @@ local function addPendingFile(filePath)
     group:insert(text)
 
     -- "Place" button
-    local placeBtn = display.newImage("GFX/addnew.png")
+    local placeBtn = display.newImage("GFX/place.png")
     placeBtn.x, placeBtn.y = 20, 0
     placeBtn.xScale, placeBtn.yScale = 0.3, 0.3
     group:insert(placeBtn)
@@ -562,8 +616,134 @@ local function LoadFileFunction(event)
     end
     return true
 end
+
+local function AlignHorizontalLeftFN(event)
+    local self = event.target
+    if event.phase == "began" then
+        display.getCurrentStage():setFocus(self, event.id)
+        self.xScale = self.InitialScaleX - 0.05
+        self.yScale = self.InitialScaleY - 0.05
+        self.isFocus = true
+    elseif self.isFocus then
+        if event.phase == "ended" or event.phase == "cancelled" then
+            self.xScale = self.InitialScaleX
+            self.yScale = self.InitialScaleY
+            display.getCurrentStage():setFocus(self, nil)
+            alignHorizontalLeftGroup()
+            self.isFocus = false
+
+        end
+    end
+    return true
+end
+local function AlignHorizontalRightFN(event)
+    local self = event.target
+    if event.phase == "began" then
+        display.getCurrentStage():setFocus(self, event.id)
+        self.xScale = self.InitialScaleX - 0.05
+        self.yScale = self.InitialScaleY - 0.05
+        self.isFocus = true
+    elseif self.isFocus then
+        if event.phase == "ended" or event.phase == "cancelled" then
+            self.xScale = self.InitialScaleX
+            self.yScale = self.InitialScaleY
+            display.getCurrentStage():setFocus(self, nil)
+            alignHorizontalRightGroup()
+            self.isFocus = false
+
+        end
+    end
+    return true
+end
+local function AlignVerticalBottomFN(event)
+    local self = event.target
+    if event.phase == "began" then
+        display.getCurrentStage():setFocus(self, event.id)
+        self.xScale = self.InitialScaleX - 0.05
+        self.yScale = self.InitialScaleY - 0.05
+        self.isFocus = true
+    elseif self.isFocus then
+        if event.phase == "ended" or event.phase == "cancelled" then
+            self.xScale = self.InitialScaleX
+            self.yScale = self.InitialScaleY
+            display.getCurrentStage():setFocus(self, nil)
+            alignVerticalBottomGroup()
+            self.isFocus = false
+
+        end
+    end
+    return true
+end
+
+local function AlignVerticalTopFN(event)
+    local self = event.target
+    if event.phase == "began" then
+        display.getCurrentStage():setFocus(self, event.id)
+        self.xScale = self.InitialScaleX - 0.05
+        self.yScale = self.InitialScaleY - 0.05
+        self.isFocus = true
+    elseif self.isFocus then
+        if event.phase == "ended" or event.phase == "cancelled" then
+            self.xScale = self.InitialScaleX
+            self.yScale = self.InitialScaleY
+            display.getCurrentStage():setFocus(self, nil)
+            alignVerticalTopGroup()
+            self.isFocus = false
+
+        end
+    end
+    return true
+end
+local function AlignVerticalCenterFN(event)
+    local self = event.target
+    if event.phase == "began" then
+        display.getCurrentStage():setFocus(self, event.id)
+        self.xScale = self.InitialScaleX - 0.05
+        self.yScale = self.InitialScaleY - 0.05
+        self.isFocus = true
+    elseif self.isFocus then
+        if event.phase == "ended" or event.phase == "cancelled" then
+            self.xScale = self.InitialScaleX
+            self.yScale = self.InitialScaleY
+            display.getCurrentStage():setFocus(self, nil)
+            alignVerticalCenterGroup()
+            self.isFocus = false
+
+        end
+    end
+    return true
+end
+local function AlignHorizontalCenterFN(event)
+    local self = event.target
+    if event.phase == "began" then
+        display.getCurrentStage():setFocus(self, event.id)
+        self.xScale = self.InitialScaleX - 0.05
+        self.yScale = self.InitialScaleY - 0.05
+        self.isFocus = true
+    elseif self.isFocus then
+        if event.phase == "ended" or event.phase == "cancelled" then
+            self.xScale = self.InitialScaleX
+            self.yScale = self.InitialScaleY
+            display.getCurrentStage():setFocus(self, nil)
+            alignHorizontalCenterGroup()
+            self.isFocus = false
+
+        end
+    end
+    return true
+end
+
+
 local function createButton(imagePath, xScale, yScale, x, y, touchListener)
     local button = display.newImage(imagePath)
+
+    -- Fallback if the image file is missing
+    if not button then
+        print("Warning: missing button asset", imagePath)
+        button = display.newRoundedRect(0, 0, 40, 40, 6)
+        button:setFillColor(0.3, 0.3, 0.3)
+    end
+
     button.xScale = xScale
     button.yScale = yScale
     button.InitialScaleX = xScale
@@ -578,14 +758,27 @@ end
 local ButtonSave = createButton("GFX/save.png", 0.3, 0.3, 20, 20, onButtonSaveTouch)
 local ButtonLoad = createButton("GFX/load.png", 0.3, 0.3, 53, 20, onButtonLoadTouch)
 local ButtonExport = createButton("GFX/export.png", 0.3, 0.3, 86, 20, onButtonExportTouch)
-local ButtonResize = createButton("GFX/resize.png", 0.3, 0.3, _W / 2 - 30, 20, onButtonResizeTouch)
-local ButtonRotate = createButton("GFX/rotate.png", 0.3, 0.3, _W / 2 + 3, 20, onButtonRotateTouch)
-local ButtonPan = createButton("GFX/pan.png", 0.3, 0.3, _W / 2 + 90, 20, onButtonPanTouch)
+ButtonResize = createButton("GFX/resize.png", 0.3, 0.3, _W / 2 - 30, 20, onButtonResizeTouch)
+ButtonRotate = createButton("GFX/rotate.png", 0.3, 0.3, _W / 2 + 3, 20, onButtonRotateTouch)
+ButtonPan = createButton("GFX/pan.png", 0.3, 0.3, _W / 2 + 90, 20, onButtonPanTouch)
 local ButtonToTop = createButton("GFX/totop.png", 0.3, 0.3, _W - 285, 20, onButtonToTopTouch)
 local ButtonDown = createButton("GFX/up_arrow.png", 0.3, 0.3, _W - 252, 20, onButtonDownTouch)
 local ButtonUp = createButton("GFX/down_arrow.png", 0.3, 0.3, _W - 219, 20, onButtonUpTouch)
 local ButtonToBottom = createButton("GFX/tobottom.png", 0.3, 0.3, _W - 186, 20, onButtonToBottomTouch)
-local ButtonAddNew = createButton("GFX/addnew.png", 0.3, 0.3, _W - 285, _H - 20, LoadFileFunction)
+local ButtonAddNew = createButton("GFX/addnew.png", 0.3, 0.3, _W - 285, 20, LoadFileFunction)
+
+
+local buttonSize = ButtonSave.width * 0.3
+local buttonSpacing = 3
+    --Align Butotns
+local alignVerticalBottom = createButton("GFX/button_alignVerticalBottom.png", 0.3, 0.3, _W/2-buttonSize*3-buttonSpacing*3, _H - buttonSize, AlignVerticalBottomFN)
+local alignVerticalTop = createButton("GFX/button_alignVerticalTop.png", 0.3, 0.3, _W/2-buttonSize*2-buttonSpacing*2, _H - buttonSize, AlignVerticalTopFN)
+local alignVerticalCenter = createButton("GFX/button_alignVerticalCenter.png", 0.3, 0.3, _W/2-buttonSize -buttonSpacing, _H - buttonSize, AlignVerticalCenterFN)
+local alignHorizontalLeft = createButton("GFX/button_alignHorizontalLeft.png", 0.3, 0.3, _W/2, _H - buttonSize, AlignHorizontalLeftFN)
+local alignHorizontalRight = createButton("GFX/button_alignHorizontalRight.png", 0.3, 0.3, _W/2+buttonSize+buttonSpacing, _H - buttonSize, AlignHorizontalRightFN)
+local alignHorizontalCenter = createButton("GFX/button_alignHorizontalCenter.png", 0.3, 0.3, _W/2+buttonSize*2 +buttonSpacing*2, _H - buttonSize, AlignHorizontalCenterFN)
+
+
 -- Set initial tint for buttons
 GUI.setButtonTint(ButtonResize, true)
 GUI.setButtonTint(ButtonRotate, false)
@@ -595,7 +788,6 @@ GUI.setButtonTint(ButtonDown, false)
 -- Initialize visibility and movement variables
 local visible = false
 -- Track the state of the shift key
-local multiSelectedImages = {}
 local shiftPressed = false
 local controlPressed = false
 
@@ -929,6 +1121,7 @@ end
 -- Create a ScrollView for the list of images
 local scrollViewHeight = _H - 83
 local halfHeight = scrollViewHeight / 2   -- each of our two stacked lists
+local TOP_MARGIN = 40
 local widget = require("widget")
 local scrollView =
     widget.newScrollView(
@@ -943,7 +1136,7 @@ local scrollView =
     }
 )
 scrollView.x = _W - 150 -- Adjusted the x position to center the scroll view
-scrollView.y = _H/2 + halfHeight/2   -- bottom half of the column
+scrollView.y = _H/2 + halfHeight/2 + 40   -- bottom half of the column
 GUI.uiGroup:insert(scrollView)
 
 -- =====================================================================
@@ -959,9 +1152,15 @@ filesScrollView = widget.newScrollView({
     backgroundColor = { 0.9, 1, 0.9, 0.5 }  -- light green
 })
 filesScrollView.x = _W - 150         -- same right column
-filesScrollView.y = _H/2 - halfHeight/2   -- top half
+filesScrollView.y = halfHeight/2 + TOP_MARGIN 
 GUI.uiGroup:insert(filesScrollView)
 
+-- Reposition layer-order buttons under the pending-files list
+local layerButtonY = filesScrollView.y + halfHeight/2 +20
+ButtonToTop.y    = layerButtonY
+ButtonDown.y     = layerButtonY
+ButtonUp.y       = layerButtonY
+ButtonToBottom.y = layerButtonY
 
 local function showRenamePopup(imageID, textElement)
     local image = nil
@@ -1330,13 +1529,8 @@ end
 
 -- Initialize the image order table when adding a new image
 
-
-
 ButtonAddNew.currentXScale = ButtonAddNew.xScale
 ButtonAddNew.currentYScale = ButtonAddNew.yScale
-
-
-
 
 -- Touch listener for deselecting the image by clicking on the background
 local function backgroundTouch(event)
