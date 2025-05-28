@@ -72,7 +72,8 @@ local removeHandles, showHandles, updateHandles, updateTextColors, moveImageUp,
     selectRotate, startPanX, startPanY, LoadFileFunction, addPendingFile, nextStep,
     alignVerticalBottomGroup, alignVerticalTopGroup, alignVerticalCenterGroup,
     alignHorizontalLeftGroup, alignHorizontalRightGroup, alignHorizontalCenterGroup,
-    ButtonPan, ButtonRotate, ButtonResize
+    distributeHorizontalGroup, distributeVerticalGroup,
+    ButtonPan
 
 local images = {}
 local handles = {}
@@ -82,7 +83,7 @@ local multiSelectedImages = {}
 local imageOrder = {}
 local isPanning = false
 local panelVisible = true
-local createdImmages = 0
+local createdImages = 0
 local canvasZoomSize = 1
 local zoomFactor = 1
 -- Pending files awaiting placement
@@ -512,6 +513,43 @@ alignHorizontalCenterGroup = function()
 end
 
 ----------------------------------------------------------------
+-- Distribution helpers (evenly space multi-selected images)
+----------------------------------------------------------------
+distributeHorizontalGroup = function()
+    local sel = getSelectedImagesList()
+    if #sel < 3 then return end
+    -- Sort by x-coordinate
+    table.sort(sel, function(a,b) return a.x < b.x end)
+    local leftX  = sel[1].x
+    local rightX = sel[#sel].x
+    local count  = #sel
+    local step   = (rightX - leftX) / (count - 1)
+    for i, img in ipairs(sel) do
+        local tx = leftX + (i-1) * step
+        img.x = tx
+        if img.outline then img.outline.x = tx end
+    end
+    updateHandles()
+end
+
+distributeVerticalGroup = function()
+    local sel = getSelectedImagesList()
+    if #sel < 3 then return end
+    -- Sort by y-coordinate
+    table.sort(sel, function(a,b) return a.y < b.y end)
+    local topY    = sel[1].y
+    local bottomY = sel[#sel].y
+    local count   = #sel
+    local step    = (bottomY - topY) / (count - 1)
+    for i, img in ipairs(sel) do
+        local ty = topY + (i-1) * step
+        img.y = ty
+        if img.outline then img.outline.y = ty end
+    end
+    updateHandles()
+end
+
+----------------------------------------------------------------
 -- Pending-file list helpers
 ----------------------------------------------------------------
 local function addPendingFile(filePath)
@@ -553,7 +591,7 @@ local function addPendingFile(filePath)
 end
 nextStep = function(FileToProcessPath)
     local uniqueID = os.time() + math.random(1, 1000) -- Ensure a more unique ID
-    createdImmages = createdImmages + 1
+    createdImages = createdImages + 1
     local newImage = display.newImage(Service.get_file_name(FileToProcessPath), system.TemporaryDirectory)
     newImage.pathToSave = FileToProcessPath
     newImage.x = _W / 2
@@ -733,6 +771,42 @@ local function AlignHorizontalCenterFN(event)
     return true
 end
 
+local function DistributeHorizontalFN(event)
+    local self = event.target
+    local onEnd = (event.phase == "ended" or event.phase == "cancelled")
+    if event.phase == "began" then
+        display.getCurrentStage():setFocus(self, event.id)
+        self.xScale = self.InitialScaleX - 0.05
+        self.yScale = self.InitialScaleY - 0.05
+        self.isFocus = true
+    elseif self.isFocus and onEnd then
+        self.xScale = self.InitialScaleX
+        self.yScale = self.InitialScaleY
+        display.getCurrentStage():setFocus(self, nil)
+        distributeHorizontalGroup()
+        self.isFocus = false
+    end
+    return true
+end
+
+local function DistributeVerticalFN(event)
+    local self = event.target
+    local onEnd = (event.phase == "ended" or event.phase == "cancelled")
+    if event.phase == "began" then
+        display.getCurrentStage():setFocus(self, event.id)
+        self.xScale = self.InitialScaleX - 0.05
+        self.yScale = self.InitialScaleY - 0.05
+        self.isFocus = true
+    elseif self.isFocus and onEnd then
+        self.xScale = self.InitialScaleX
+        self.yScale = self.InitialScaleY
+        display.getCurrentStage():setFocus(self, nil)
+        distributeVerticalGroup()
+        self.isFocus = false
+    end
+    return true
+end
+
 
 local function createButton(imagePath, xScale, yScale, x, y, touchListener)
     local button = display.newImage(imagePath)
@@ -758,7 +832,7 @@ end
 local ButtonSave = createButton("GFX/save.png", 0.3, 0.3, 20, 20, onButtonSaveTouch)
 local ButtonLoad = createButton("GFX/load.png", 0.3, 0.3, 53, 20, onButtonLoadTouch)
 local ButtonExport = createButton("GFX/export.png", 0.3, 0.3, 86, 20, onButtonExportTouch)
-ButtonResize = createButton("GFX/resize.png", 0.3, 0.3, _W / 2 - 30, 20, onButtonResizeTouch)
+ButtonResize = createButton("GFX/Cursor.png", 0.3, 0.3, _W / 2 - 30, 20, onButtonResizeTouch)
 ButtonRotate = createButton("GFX/rotate.png", 0.3, 0.3, _W / 2 + 3, 20, onButtonRotateTouch)
 ButtonPan = createButton("GFX/pan.png", 0.3, 0.3, _W / 2 + 90, 20, onButtonPanTouch)
 local ButtonToTop = createButton("GFX/totop.png", 0.3, 0.3, _W - 285, 20, onButtonToTopTouch)
@@ -777,6 +851,25 @@ local alignVerticalCenter = createButton("GFX/button_alignVerticalCenter.png", 0
 local alignHorizontalLeft = createButton("GFX/button_alignHorizontalLeft.png", 0.3, 0.3, _W/2, _H - buttonSize, AlignHorizontalLeftFN)
 local alignHorizontalRight = createButton("GFX/button_alignHorizontalRight.png", 0.3, 0.3, _W/2+buttonSize+buttonSpacing, _H - buttonSize, AlignHorizontalRightFN)
 local alignHorizontalCenter = createButton("GFX/button_alignHorizontalCenter.png", 0.3, 0.3, _W/2+buttonSize*2 +buttonSpacing*2, _H - buttonSize, AlignHorizontalCenterFN)
+
+
+-- Distribution buttons: inline with align buttons, 10px gap
+local distributeButtonY = _H - buttonSize
+local distX1 = alignHorizontalCenter.x + buttonSize + buttonSpacing
+
+local distributeHorizontal = createButton(
+    "GFX/button_horizontalDistribute.png",
+    0.3, 0.3,
+    distX1, distributeButtonY,
+    DistributeHorizontalFN
+)
+
+local distributeVertical = createButton(
+    "GFX/button_verticalDistribute.png",
+    0.3, 0.3,
+    distX1 + buttonSize + buttonSpacing, distributeButtonY,
+    DistributeVerticalFN
+)
 
 
 -- Set initial tint for buttons
@@ -946,6 +1039,26 @@ removeHandles = function()
     rotateHandles = {}
     clearParameters()
 end
+
+----------------------------------------------------------------
+-- Keep outlines above every sprite
+----------------------------------------------------------------
+local function bringOutlinesToFront()
+    -- First: make sure the dedicated handle/outline group sits above sprites
+    if GUI.handleGroup and GUI.handleGroup.parent then
+        GUI.handleGroup:toFront()
+    end
+
+    -- Selected image outline
+    if selectedImage and selectedImage.outline then
+        selectedImage.outline:toFront()
+    end
+    -- Multi-selected outlines
+    for img,_ in pairs(multiSelectedImages) do
+        if img.outline then img.outline:toFront() end
+    end
+end
+
 -- Function to create and show handles around the selected image
 showHandles = function()
     if selectedImage then
@@ -1003,6 +1116,7 @@ showHandles = function()
         end
         updateParameters()
     end
+    bringOutlinesToFront()
 end
 -- Touch listener for selecting an image
 imageTouch = function(event)
@@ -1021,23 +1135,34 @@ imageTouch = function(event)
         image.offsetX = event.x - image.x
         image.offsetY = event.y - image.y
 
+        -- For multi‑select dragging: remember offset of each sprite from the
+        -- one we are directly dragging.
+        for img,_ in pairs(multiSelectedImages) do
+            img.dragOffsetX = img.x - image.x
+            img.dragOffsetY = img.y - image.y
+        end
+
         if shiftPressed then
             if selectedImage and selectedImage ~= image then
                 -- Add outline to the current selected image and add it to multiSelectedImages
                 GUI.drawOutline(selectedImage)
+                bringOutlinesToFront()
                 multiSelectedImages[selectedImage] = true
                 removeHandles()
                 selectedImage = nil
             end
-            
+
             if multiSelectedImages[image] then
                 -- Deselect the image if it's already selected
                 GUI.removeOutline(image)
                 multiSelectedImages[image] = nil
+                updateTextColors()
             else
                 -- Select the image if it's not already selected
                 GUI.drawOutline(image)
+                bringOutlinesToFront()
                 multiSelectedImages[image] = true
+                updateTextColors()
             end
         else
             -- If clicking on one of the multi-selected images without pressing shift, do nothing
@@ -1045,7 +1170,7 @@ imageTouch = function(event)
                 -- Keep the multi-selected images as they are
                 return true
             end
-            
+
             -- Existing single selection logic
             if selectedImage ~= image then
                 removeHandles()
@@ -1064,7 +1189,7 @@ imageTouch = function(event)
         for img, _ in pairs(multiSelectedImages) do
             img.startX = img.x
             img.startY = img.y
-            img.prevX = img.x
+            img.prevX = img.x            -- <-- set prevX at drag start
             img.prevY = img.y
         end
     elseif image.isFocus then
@@ -1072,20 +1197,35 @@ imageTouch = function(event)
             local dx = event.x - (image.startX + image.offsetX)
             local dy = event.y - (image.startY + image.offsetY)
             if next(multiSelectedImages) ~= nil then
-                for img, _ in pairs(multiSelectedImages) do
-                    img.x = img.startX + dx
-                    img.y = img.startY + dy
-                    if img.outline then
-                        img.outline.x = img.x
-                        img.outline.y = img.y
-                    end
-                end
-            else
+                -- Move the sprite under the pointer
                 image.x = image.startX + dx
                 image.y = image.startY + dy
                 if image.outline then
-                    image.outline.x = image.x
-                    image.outline.y = image.y
+                    image.outline.x, image.outline.y = image.x, image.y
+                end
+
+                -- Move every other selected sprite by its saved offset
+                for img,_ in pairs(multiSelectedImages) do
+                    if img ~= image then
+                        -- If offsets were somehow nil (e.g. new selection),
+                        -- initialise them on the fly
+                        if not img.dragOffsetX or not img.dragOffsetY then
+                            img.dragOffsetX = img.x - image.x
+                            img.dragOffsetY = img.y - image.y
+                        end
+                        img.x = image.x + img.dragOffsetX
+                        img.y = image.y + img.dragOffsetY
+                        if img.outline then
+                            img.outline.x, img.outline.y = img.x, img.y
+                        end
+                    end
+                end
+            else
+                -- Single‑sprite drag
+                image.x = image.startX + dx
+                image.y = image.startY + dy
+                if image.outline then
+                    image.outline.x, image.outline.y = image.x, image.y
                 end
             end
             if image == selectedImage then
@@ -1095,15 +1235,11 @@ imageTouch = function(event)
         elseif event.phase == "ended" or event.phase == "cancelled" then
             display.getCurrentStage():setFocus(image, nil)
             image.isFocus = false
-            if next(multiSelectedImages) ~= nil then
-                for img, _ in pairs(multiSelectedImages) do
-                    img.prevX = img.x
-                    img.prevY = img.y
-                end
-            else
-                image.prevX = image.x
-                image.prevY = image.y
+            -- Clear stored offsets
+            for img,_ in pairs(multiSelectedImages) do
+                img.dragOffsetX, img.dragOffsetY = nil, nil
             end
+            image.dragOffsetX, image.dragOffsetY = nil, nil
         end
     end
 
@@ -1115,6 +1251,11 @@ imageTouch = function(event)
                 updateParameters()
             end
         end
+        -- Clear stored offsets
+        for img,_ in pairs(multiSelectedImages) do
+            img.dragOffsetX, img.dragOffsetY = nil, nil
+        end
+        image.dragOffsetX, image.dragOffsetY = nil, nil
     end
     return true
 end
@@ -1230,18 +1371,55 @@ local function showRenamePopup(imageID, textElement)
     renameButton:addEventListener("touch", onRenameComplete)
     GUI.uiGroup:insert(renameGroup)
 end
+-- Helper: is a sprite ID currently in multi-select?
+local function isMultiSelected(id)
+    for img,_ in pairs(multiSelectedImages) do
+        if img.ID == id then return true end
+    end
+    return false
+end
+
+----------------------------------------------------------------
+-- Show alignment buttons only when multi‑selection is active
+----------------------------------------------------------------
+local function updateAlignButtonsVisibility()
+    local hasMulti = false
+    for _ in pairs(multiSelectedImages) do
+        hasMulti = true
+        break
+    end
+    -- Buttons are visible only if two or more sprites are selected
+    local show = hasMulti
+    alignVerticalBottom.isVisible   = show
+    alignVerticalTop.isVisible      = show
+    alignVerticalCenter.isVisible   = show
+    alignHorizontalLeft.isVisible   = show
+    alignHorizontalRight.isVisible  = show
+    alignHorizontalCenter.isVisible = show
+    distributeHorizontal.isVisible = show
+    distributeVertical.isVisible   = show
+end
+
+-- Hide them at startup
+updateAlignButtonsVisibility()
+
 local textElements = {} -- Table to store text elements
 
 updateTextColors = function()
     for _, element in pairs(textElements) do
-        if selectedImage and element.id == selectedImage.ID then
-            element.text:setFillColor(0, 0, 1) -- Blue color for selected image
-        elseif multiSelectedImages[element] then
-            element.text:setFillColor(0.5, 0.5, 0.5) -- Gray color for multi-selected images
+        local id = element.id
+        -- Text always black
+        element.text:setFillColor(0)
+        if (selectedImage and id == selectedImage.ID) or isMultiSelected(id) then
+            -- darken the background
+            element.bg:setFillColor(0, 0, 0, 0.2)
         else
-            element.text:setFillColor(0) -- Black color for unselected images
+            -- clear back to transparent
+            element.bg:setFillColor(1, 1, 1, 0)
         end
     end
+    -- update align/distribute button visibility
+    updateAlignButtonsVisibility()
 end
 
 -- Function to reorder the GUI.imageGroup based on the order table
@@ -1254,6 +1432,7 @@ reorderImageGroup = function()
             end
         end
     end
+    bringOutlinesToFront()
 end
 -- Function to move an image up in the order table
 local function moveImageInOrderTableUp(imageID)
@@ -1282,6 +1461,11 @@ local scrollViewItemCount = 0
 -- Initialize the image order table when adding a new image
 addImageToList = function(imageID)
     local group = display.newGroup()
+        -- Background for this row
+    local bgRect = display.newRect(group, scrollView.width/2, 0, scrollView.width, 40)
+    bgRect.anchorY = 0.5
+    bgRect:setFillColor(1, 1, 1, 0)  -- transparent by default
+    bgRect.isHitTestable = true
     group.id = imageID
 
     -- Find the image by ID
@@ -1315,7 +1499,7 @@ addImageToList = function(imageID)
     group:insert(text)
 
     -- Store reference to the text element and its group
-    textElements[imageID] = {id = imageID, text = text, group = group} -- Ensure id is set
+    textElements[imageID] = {id = imageID, text = text, group = group, bg = bgRect} -- Ensure id is set
 
     -- Rename button
     local renameButton = display.newImage("GFX/edit.png")
@@ -1396,26 +1580,55 @@ addImageToList = function(imageID)
     end
     -- Add the event listener to the button
     visibleButton:addEventListener("touch", onVisibleButtonTouch)
-    -- Make the text element touch-sensitive to select the image
-    text:addEventListener(
-        "touch",
-        function(event)
-            if event.phase == "ended" then
-                selectedImage = nil
-                for i, img in ipairs(images) do
-                    if img.ID == imageID then
-                        selectedImage = img
-                        break
-                    end
+    -- Touch on row background selects or multi-selects the image
+    bgRect:addEventListener("touch", function(event)
+        if event.phase == "ended" then
+            -- Find the corresponding image object
+            local image = nil
+            for _, img in ipairs(images) do
+                if img.ID == imageID then
+                    image = img
+                    break
                 end
-                removeHandles()
+            end
+            if not image then return true end
+
+            if shiftPressed then
+                -- Include the previously selected image in the multi-selection
+                if selectedImage and selectedImage ~= image and not multiSelectedImages[selectedImage] then
+                    GUI.drawOutline(selectedImage)
+                    bringOutlinesToFront()
+                    multiSelectedImages[selectedImage] = true
+                    removeHandles()
+                    selectedImage = nil
+                end
+                -- Toggle multi-selection for the clicked image, bringing outline to front
+                if multiSelectedImages[image] then
+                    GUI.removeOutline(image)
+                    multiSelectedImages[image] = nil
+                else
+                    GUI.drawOutline(image)
+                    bringOutlinesToFront()
+                    multiSelectedImages[image] = true
+                end
+                updateTextColors()
+            else
+                -- Clear any existing multi-selection outlines
+                for img, _ in pairs(multiSelectedImages) do
+                    GUI.removeOutline(img)
+                end
+                multiSelectedImages = {}
+
+                -- Single selection: deselect previous, select new
+                if selectedImage then removeHandles() end
+                selectedImage = image
                 showHandles()
                 updateHandles()
                 updateTextColors()
             end
-            return true
         end
-    )
+        return true
+    end)
     scrollView:insert(group)
     -- Add the new image to the order table
     table.insert(imageOrder, imageID)
@@ -1433,14 +1646,11 @@ updateImageListOrder = function()
     end
 end
 togleVisibility = function(visible, imageID)
-    for i, img in ipairs(images) do
+    for _, img in ipairs(images) do
         if img.ID == imageID then
-            if selectedImage == img then
-                if visible then
-                    img.isVisible = true
-                else
-                    img.isVisible = false
-                end
+            img.isVisible = visible                 -- toggle sprite itself
+            if img.outline then                     -- keep outline in sync
+                img.outline.isVisible = visible
             end
             break
         end
@@ -1562,6 +1772,7 @@ local function backgroundTouch(event)
             GUI.removeOutline(img)
         end
         multiSelectedImages = {}
+        updateTextColors()        -- refresh row colors & hide align buttons
     end
     return true
 end
@@ -1686,12 +1897,46 @@ local function onKeyEvent(event)
             controlPressed = false
         end
     end
-    -- Add key event handling for "s" and "r"
+    -- Add key event handling for "s", "r", and arrow-key nudging
     if event.phase == "down" then
         if event.keyName == "s" then
             selectResize()
         elseif event.keyName == "r" then
             selectRotate()
+        elseif event.keyName == "up" or event.keyName == "down"
+            or event.keyName == "left" or event.keyName == "right" then
+
+            -- Determine nudge step: Ctrl=5 units, Shift=0.1 units, otherwise 1 unit
+            local step = controlPressed and 5 or (shiftPressed and 0.1 or 1)
+            local dx, dy = 0, 0
+            if event.keyName == "up"    then dy = -step
+            elseif event.keyName == "down"  then dy =  step
+            elseif event.keyName == "left"  then dx = -step
+            elseif event.keyName == "right" then dx =  step
+            end
+
+            -- Apply movement to selection (single or multi)
+            if next(multiSelectedImages) ~= nil then
+                for img, _ in pairs(multiSelectedImages) do
+                    img.x = img.x + dx
+                    img.y = img.y + dy
+                    if img.outline then
+                        img.outline.x, img.outline.y = img.x, img.y
+                    end
+                end
+            elseif selectedImage then
+                selectedImage.x = selectedImage.x + dx
+                selectedImage.y = selectedImage.y + dy
+                if selectedImage.outline then
+                    selectedImage.outline.x, selectedImage.outline.y = selectedImage.x, selectedImage.y
+                end
+                updateHandles()
+                updateParameters()
+            end
+
+            -- Refresh UI states
+            updateTextColors()
+            bringOutlinesToFront()
         end
     end
 
