@@ -623,107 +623,6 @@ local function canvasPanTouch(event)
     end
     return true
 end
--- Key handler for undo/redo and copy/paste
-local function onKey(event)
-    if event.phase == "down" then
-        -- Undo / Redo
-        if event.keyName == "z" and (event.isCtrlDown or event.isCommandDown) then
-            if event.isShiftDown then redo() else undo() end
-            return true
-        end
-        -- Copy selected image(s)
-        if event.keyName == "c" and (event.isCtrlDown or event.isCommandDown) then
-            local sel = getSelectedImagesList()
-            if #sel > 1 then
-                -- Copy multiple images
-                clipboard = { multiple = true, items = {} }
-                for _, img in ipairs(sel) do
-                    table.insert(clipboard.items, {
-                        path     = img.pathToSave or img.path,
-                        name     = img.name,
-                        x        = img.x,
-                        y        = img.y,
-                        width    = img.width,
-                        height   = img.height,
-                        rotation = img.rotation,
-                        alpha    = img.alpha,
-                        xScale   = img.xScale,
-                        yScale   = img.yScale,
-                    })
-                end
-            elseif selectedImage then
-                -- Copy single image
-                clipboard = {
-                    multiple = false,
-                    item = {
-                        path     = selectedImage.pathToSave or selectedImage.path,
-                        name     = selectedImage.name,
-                        x        = selectedImage.x,
-                        y        = selectedImage.y,
-                        width    = selectedImage.width,
-                        height   = selectedImage.height,
-                        rotation = selectedImage.rotation,
-                        alpha    = selectedImage.alpha,
-                        xScale   = selectedImage.xScale,
-                        yScale   = selectedImage.yScale,
-                    }
-                }
-            end
-            return true
-        end
-        -- Paste clipboard image(s)
-        if event.keyName == "v" and (event.isCtrlDown or event.isCommandDown) and clipboard then
-            local newSel = {}
-            local function pasteItem(data)
-                local fileName = Service.get_file_name(data.path)
-                Service.copyFileToSB(
-                    fileName,
-                    Service.getPath(data.path),
-                    fileName,
-                    system.TemporaryDirectory,
-                    true
-                )
-                local uniqueID = os.time() + math.random(1,1000)
-                local newImage = display.newImage(fileName, system.TemporaryDirectory)
-                newImage.pathToSave = data.path
-                newImage.ID         = uniqueID
-                newImage.name       = data.name
-                newImage.xScale     = data.xScale
-                newImage.yScale     = data.yScale
-                newImage.rotation   = data.rotation
-                newImage.alpha      = data.alpha
-                newImage.width      = data.width
-                newImage.height     = data.height
-                newImage.x          = data.x
-                newImage.y          = data.y
-                newImage:addEventListener("touch", imageTouch)
-                GUI.imageGroup:insert(newImage)
-                table.insert(images, newImage)
-                addImageToList(newImage.ID)
-                table.insert(newSel, newImage)
-            end
-            if clipboard.multiple then
-                for _, data in ipairs(clipboard.items) do
-                    pasteItem(data)
-                end
-            elseif clipboard.item then
-                pasteItem(clipboard.item)
-            end
-            initializeImageOrder()
-            -- Select pasted image(s)
-            selectedImage = nil
-            multiSelectedImages = {}
-            for _, img in ipairs(newSel) do
-                multiSelectedImages[img] = true
-            end
-            -- Refresh UI
-            removeHandles(); showHandles(); updateHandles(); updateTextColors()
-            return true
-        end
-    end
-    return false
-end
-Runtime:addEventListener("key", onKey)
 Runtime:addEventListener("touch", canvasPanTouch)
 local function updateHandlesForm()
     if selectedImage then
@@ -1840,12 +1739,124 @@ filesScrollView.y = halfHeight/2 + TOP_MARGIN
 GUI.uiGroup:insert(filesScrollView)
 
 -- Remember scrollViews’ original X positions
+
 scrollOriginalX = scrollView.x
 filesOriginalX  = filesScrollView.x
 
+-- Key handler for undo/redo and copy/paste
+local function onKey(event)
+    if event.phase == "down" then
+        -- Undo / Redo
+        if event.keyName == "z" and (event.isCtrlDown or event.isCommandDown) then
+            if event.isShiftDown then redo() else undo() end
+            return true
+        end
+        -- Copy selected image(s)
+        if event.keyName == "c" and (event.isCtrlDown or event.isCommandDown) then
+            local sel = getSelectedImagesList()
+            if #sel > 1 then
+                -- Copy multiple images
+                clipboard = { multiple = true, items = {} }
+                for _, img in ipairs(sel) do
+                    table.insert(clipboard.items, {
+                        path     = img.pathToSave or img.path,
+                        name     = img.name,
+                        x        = img.x,
+                        y        = img.y,
+                        width    = img.width,
+                        height   = img.height,
+                        rotation = img.rotation,
+                        alpha    = img.alpha,
+                        xScale   = img.xScale,
+                        yScale   = img.yScale,
+                    })
+                end
+            elseif selectedImage then
+                -- Copy single image
+                clipboard = {
+                    multiple = false,
+                    item = {
+                        path     = selectedImage.pathToSave or selectedImage.path,
+                        name     = selectedImage.name,
+                        x        = selectedImage.x,
+                        y        = selectedImage.y,
+                        width    = selectedImage.width,
+                        height   = selectedImage.height,
+                        rotation = selectedImage.rotation,
+                        alpha    = selectedImage.alpha,
+                        xScale   = selectedImage.xScale,
+                        yScale   = selectedImage.yScale,
+                    }
+                }
+            end
+            return true
+        end
+        -- Paste clipboard image(s)
+        if event.keyName == "v" and (event.isCtrlDown or event.isCommandDown) and clipboard then
+            local newSel = {}
+            local function pasteItem(data)
+                local fileName = Service.get_file_name(data.path)
+                Service.copyFileToSB(
+                    fileName,
+                    Service.getPath(data.path),
+                    fileName,
+                    system.TemporaryDirectory,
+                    true
+                )
+                local uniqueID = os.time() + math.random(1,1000)
+                local newImage = display.newImage(fileName, system.TemporaryDirectory)
+                newImage.pathToSave = data.path
+                newImage.ID         = uniqueID
+                newImage.name       = data.name
+                newImage.xScale     = data.xScale
+                newImage.yScale     = data.yScale
+                newImage.rotation   = data.rotation
+                newImage.alpha      = data.alpha
+                newImage.width      = data.width
+                newImage.height     = data.height
+                newImage.x          = data.x
+                newImage.y          = data.y
+                newImage:addEventListener("touch", imageTouch)
+                GUI.imageGroup:insert(newImage)
+                table.insert(images, newImage)
+                addImageToList(newImage.ID)
+                table.insert(newSel, newImage)
+            end
+            if clipboard.multiple then
+                for _, data in ipairs(clipboard.items) do
+                    pasteItem(data)
+                end
+            elseif clipboard.item then
+                pasteItem(clipboard.item)
+            end
+            initializeImageOrder()
+            -- Select pasted image(s)
+            selectedImage = nil
+            multiSelectedImages = {}
+            for _, img in ipairs(newSel) do
+                multiSelectedImages[img] = true
+            end
+            -- Refresh UI
+            removeHandles(); showHandles(); updateHandles(); updateTextColors()
+            return true
+        end
+
+        -- Toggle both drawers with Tab by invoking existing button handlers
+        if event.keyName == "tab" then
+            -- Simulate scroll drawer toggle via the button
+            scrollToggleBtn:dispatchEvent({ name = "touch", phase = "ended" })
+            -- Simulate panel drawer toggle via the button
+            panelToggleBtn:dispatchEvent({ name = "touch", phase = "ended" })
+            return true
+        end
+    end
+    return false
+end
+Runtime:addEventListener("key", onKey)
+
 
 -- Function to animate layer-order and AddNew buttons on/off screen when toggling scrollViews
-local function updateScrollToggleVisibility(show)
+updateScrollToggleVisibility = function(show)
     -- Slide layer/order and AddNew buttons on/off-screen
     for i, btn in ipairs(layerButtons) do
         local origX = layerOriginalXs[i]
