@@ -137,6 +137,75 @@ local zoomFactor = 1
 local pendingFiles = {}
 local filesScrollView -- pending‑files list (green, top‑right)
 
+-- Placement mode state
+local isPlacing = false
+local placingImage = nil
+
+local function placementTouch(event)
+    if not isPlacing then return false end
+    if event.phase == "began" or event.phase == "moved" then
+        -- Convert global coordinates to imageGroup-local (accounting for pan)
+        local localX = event.x - (GUI.imageGroup and GUI.imageGroup.x or 0)
+        local localY = event.y - (GUI.imageGroup and GUI.imageGroup.y or 0)
+        placingImage.x, placingImage.y = localX, localY
+    elseif event.phase == "ended" then
+        -- finalize placement
+        placingImage.alpha = 1
+        -- Now the new image should respond to touch
+        placingImage:addEventListener("touch", imageTouch)
+        table.insert(images, placingImage)
+        addImageToList(placingImage.ID)
+        initializeImageOrder()
+        selectedImage = placingImage
+        isPlacing = false
+        placingImage = nil
+        placingImage:removeEventListener("touch", placementTouch)
+        Runtime:removeEventListener("mouse", placementMouse)
+        Runtime:removeEventListener("key", placementKey)
+        removeHandles(); showHandles(); updateHandles(); updateTextColors()
+    end
+    return true
+end
+
+local function placementKey(event)
+    if not isPlacing then return false end
+    if event.phase == "down" and event.keyName == "escape" then
+        placingImage:removeSelf()
+        placingImage = nil
+        isPlacing = false
+        Runtime:removeEventListener("touch", placementTouch)
+        Runtime:removeEventListener("mouse", placementMouse)
+        Runtime:removeEventListener("key", placementKey)
+    end
+    return false
+end
+
+-- Handle mouse movement and clicks during placement (desktop)
+local function placementMouse(event)
+    if not isPlacing then return false end
+    -- Convert global to local for ghost position
+    local localX = event.x - (GUI.imageGroup and GUI.imageGroup.x or 0)
+    local localY = event.y - (GUI.imageGroup and GUI.imageGroup.y or 0)
+    placingImage.x, placingImage.y = localX, localY
+    -- Finalize on mouse button release (any button)
+    if event.type == "up" then
+        placingImage.alpha = 1
+        -- Now the new image should respond to touch
+        placingImage:addEventListener("touch", imageTouch)
+        table.insert(images, placingImage)
+        addImageToList(placingImage.ID)
+        initializeImageOrder()
+        selectedImage = placingImage
+        isPlacing = false
+        placingImage = nil
+        Runtime:removeEventListener("mouse", placementMouse)
+        Runtime:removeEventListener("touch", placementTouch)
+        Runtime:removeEventListener("key", placementKey)
+        removeHandles(); showHandles(); updateHandles(); updateTextColors()
+    end
+    return false
+end
+
 
 
 -- Function to get the currently selected image
@@ -388,7 +457,8 @@ local function updateParameters()
         OpacitySlider.isVisible           = false
     else
         -- Single selection: original behavior
-        local img = selectedImage
+        local img = getSelectedImagesList()[1]
+        if not img then return end
         PropertiesXinput.text       = string.format("%.2f", img.x)
         PropertiesYinput.text       = string.format("%.2f", img.y)
         PropertiesScaleXinput.text  = string.format("%.2f", img.width)
@@ -811,12 +881,33 @@ local function addPendingFile(filePath)
     placeBtn.xScale, placeBtn.yScale = 0.3, 0.3
     group:insert(placeBtn)
 
-    -- When pressed, spawn a new instance in the workspace but keep this row for reuse
+    -- When pressed, enter placement mode for this image
     placeBtn:addEventListener("touch", function(event)
         if event.phase == "ended" then
-            -- Spawn a *new* instance of the chosen image in the workspace,
-            -- but keep this row so it can be used again later.
-            nextStep(filePath)
+            -- Begin placement mode instead of immediate placement
+            local fileName = Service.get_file_name(filePath)
+            Service.copyFileToSB(
+                fileName,
+                Service.getPath(filePath),
+                fileName,
+                system.TemporaryDirectory,
+                true
+            )
+            placingImage = display.newImage(fileName, system.TemporaryDirectory)
+            placingImage.pathToSave = filePath
+            placingImage.ID         = os.time() + math.random(1,1000)
+            placingImage.name       = Service.get_file_name_no_extension(filePath)
+            placingImage.alpha      = 0.5
+            GUI.imageGroup:insert(placingImage)
+            -- Position ghost under cursor, converting to imageGroup-local coords
+            local localX = event.x - (GUI.imageGroup and GUI.imageGroup.x or 0)
+            local localY = event.y - (GUI.imageGroup and GUI.imageGroup.y or 0)
+            placingImage.x, placingImage.y = localX, localY
+            isPlacing = true
+            -- Listen for both mouse and touch to move/finalize placement
+            Runtime:addEventListener("mouse", placementMouse)
+            placingImage:addEventListener("touch", placementTouch)
+            Runtime:addEventListener("key", placementKey)
         end
         return true
     end)
@@ -1239,6 +1330,9 @@ local function handleTouch(event)
         if event.phase == "moved" then
             if handle.isGroupResize and handle.isFocus and event.phase == "moved" then
                 local h        = handle
+                -- Convert event.x/y (screen) into world coords (accounting for pan & zoom)
+                local worldX = (event.x - GUI.imageGroup.x) / zoomFactor
+                local worldY = (event.y - GUI.imageGroup.y) / zoomFactor
                 local b        = h.boxStart
                 local origMinX = b.minX
                 local origMinY = b.minY
@@ -1247,17 +1341,17 @@ local function handleTouch(event)
                 local origW    = origMaxX - origMinX
                 local origH    = origMaxY - origMinY
 
-                -- Determine new box corners based on dragged handle
+                -- Determine new box corners based on dragged handle (in world space)
                 local newMinX, newMinY = origMinX, origMinY
                 local newMaxX, newMaxY = origMaxX, origMaxY
                 if h.corner == "topLeft" then
-                    newMinX, newMinY = event.x, event.y
+                    newMinX, newMinY = worldX, worldY
                 elseif h.corner == "topRight" then
-                    newMaxX, newMinY = event.x, event.y
+                    newMaxX, newMinY = worldX, worldY
                 elseif h.corner == "bottomLeft" then
-                    newMinX, newMaxY = event.x, event.y
+                    newMinX, newMaxY = worldX, worldY
                 elseif h.corner == "bottomRight" then
-                    newMaxX, newMaxY = event.x, event.y
+                    newMaxX, newMaxY = worldX, worldY
                 end
 
                 -- Compute scales for width/height
@@ -1284,7 +1378,7 @@ local function handleTouch(event)
                     end
                 end
 
-                -- Update the bounding-box rectangle
+                -- Update the bounding-box rectangle (in world space)
                 if groupHandleRect then
                     groupHandleRect.width  = newW
                     groupHandleRect.height = newH
@@ -1292,7 +1386,7 @@ local function handleTouch(event)
                     groupHandleRect.y = newMinY + newH * 0.5
                 end
 
-                -- Reposition corner handles to new corners
+                -- Reposition corner handles to new corners (in world space)
                 for corner, hdl in pairs(groupResizeHandles) do
                     if corner == "topLeft" then
                         hdl.x, hdl.y = newMinX, newMinY
