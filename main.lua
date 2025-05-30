@@ -1,62 +1,76 @@
 -----------------------------------------------------------------------------------------
 -- main.lua
 -----------------------------------------------------------------------------------------
---[[
-GraphicsMover - Image Manipulation Application
-Version: 1.0
-
-DESCRIPTION:
-This application allows users to load, manipulate, and arrange multiple images in a workspace.
-It provides tools for resizing, rotating, repositioning, and organizing images in layers.
-
-FEATURES:
-1. Image Management:
-   - Load multiple PNG images into a workspace
-   - Save and load workspaces to/from files
-   - Export workspace configurations as Lua files
-   - Organize images in layers with controls to move images up/down in the layer hierarchy
-
-2. Image Manipulation:
-   - Resize images using corner handles
-   - Rotate images using rotation handles
-   - Pan/move images by dragging them
-   - Flip images horizontally or vertically
-   - Adjust image opacity/transparency
-   - Pan the entire workspace
-
-3. User Interface:
-   - Properties panel showing the selected image's position, size, rotation, and opacity
-   - Layer management with a scrollable list of images
-   - Ability to rename images
-   - Toggle image visibility
-   - Delete images from the workspace
-   - Multi-select images with shift key for group operations
-
-KEYBOARD SHORTCUTS:
-   - Shift-click: Multi-select images
-   - 's': Switch to resize mode
-   - 'r': Switch to rotate mode
-
-DEPENDENCIES:
-   - Corona SDK/Solar2D game engine
-   - tinyfiledialogs plugin for file dialogs
-   - widget library for UI components
-
-CODE ORGANIZATION:
-   - UI setup and initialization at the top
-   - Event handlers and touch functions in the middle
-   - Image manipulation functions (resize, rotate, etc.)
-   - Layer management functions
-   - File operations (save, load, export)
---]]
 
 _W = display.contentWidth
 _H = display.contentHeight
+
+-- Undo/Redo stacks
+local undoStack, redoStack = {}, {}
+local maxHistory = 20
+
+local function pushUndo(cmd)
+    table.insert(undoStack, cmd)
+    if #undoStack > maxHistory then table.remove(undoStack, 1) end
+    redoStack = {}
+end
+
+
+local function undo()
+    local cmd = table.remove(undoStack)
+    if not cmd then return end
+    if cmd.imgs then
+        -- Restore all recorded properties for each image
+        for _, e in ipairs(cmd.imgs) do
+            for prop, val in pairs(e.old) do
+                e.img[prop] = val
+            end
+        end
+        -- Remove any visible handles/outlines after multi-image undo
+        if removeHandles then removeHandles() end
+    elseif type(cmd.old) == "table" then
+        for k, v in pairs(cmd.old) do
+            cmd.img[k] = v
+        end
+    else
+        cmd.img[cmd.prop] = cmd.old
+    end
+    updateHandles(); updateParameters()
+    table.insert(redoStack, cmd)
+end
+
+
+local function redo()
+    local cmd = table.remove(redoStack)
+    if not cmd then return end
+    if cmd.imgs then
+        -- Reapply all recorded properties for each image
+        for _, e in ipairs(cmd.imgs) do
+            for prop, val in pairs(e.new) do
+                e.img[prop] = val
+            end
+        end
+    elseif type(cmd.new) == "table" then
+        for k, v in pairs(cmd.new) do
+            cmd.img[k] = v
+        end
+    else
+        cmd.img[cmd.prop] = cmd.new
+    end
+    updateHandles(); updateParameters()
+    table.insert(undoStack, cmd)
+end  -- end of redo function
+
+
+
+----------------------------------------------------------------
 local json = require("json")
 local save = require("saveexport")
 local myPlugin = require("plugin.tinyfiledialogs")
 local Service = require("service")
 local GUI = require("GUIcontrolFunctions")
+-- Ensure handles and outlines move with the canvas during pan
+GUI.imageGroup:insert(GUI.handleGroup)
 local Checkbox = require("Checkbox")
 
 --------------------------------------
@@ -81,12 +95,35 @@ local resizeHandles = {}
 local rotateHandles = {}
 local groupHandleRect  -- outline for multi-select bounding box
 local multiSelectedImages = {}
+local groupResizeHandles = {}
+removeHandles = function()
+    for _, handle in pairs(resizeHandles) do
+        handle:removeSelf()
+    end
+    resizeHandles = {}
+    for _, handle in pairs(rotateHandles) do
+        handle:removeSelf()
+    end
+    rotateHandles = {}
+    if groupHandleRect then
+        groupHandleRect:removeSelf()
+        groupHandleRect = nil
+    end
+    if groupResizeHandles then
+        for _, h in pairs(groupResizeHandles) do
+            h:removeSelf()
+        end
+    end
+    groupResizeHandles = {}
+end
+
+-- Expose removeHandles globally for showHandles
+_G.removeHandles = removeHandles
 local panelDrawerOpen = true
 local panelOriginalX, panelOriginalY
 local scrollDrawerOpen = true
 local scrollOriginalX, filesOriginalX
 
-local groupResizeHandles = {} -- table of corner handles for group-resize
 local imageOrder = {}
 local isPanning = false
 local panelVisible = true
@@ -108,6 +145,33 @@ end
 local checkboxFlipX = Checkbox:new{ id = "checkboxFlipX", x = flipXText.x + 19, y = flipXText.y, parentGroup = GUI.propertiesGroup, getSelectedImage = getSelectedImage }
 local checkboxFlipY = Checkbox:new{ id = "checkboxFlipY", x = flipYText.x + 19, y = flipYText.y, parentGroup = GUI.propertiesGroup, getSelectedImage = getSelectedImage }
 
+-- Undo/Redo for flips (guarded)
+if checkboxFlipX and checkboxFlipX.addEventListener then
+    checkboxFlipX:addEventListener("tap", function()
+        if selectedImage then
+            local oldValue = selectedImage.xScale
+            local newValue = -oldValue
+            selectedImage.xScale = newValue
+            pushUndo({ img = selectedImage, prop = "xScale", old = oldValue, new = newValue })
+            updateHandles(); updateParameters()
+        end
+        return true
+    end)
+end
+
+if checkboxFlipY and checkboxFlipY.addEventListener then
+    checkboxFlipY:addEventListener("tap", function()
+        if selectedImage then
+            local oldValue = selectedImage.yScale
+            local newValue = -oldValue
+            selectedImage.yScale = newValue
+            pushUndo({ img = selectedImage, prop = "yScale", old = oldValue, new = newValue })
+            updateHandles(); updateParameters()
+        end
+        return true
+    end)
+end
+
 local PropertiesXinput = GUI.createTextField(PropertiesXtext.x + 60, PropertiesXtext.y, 100, 15, GUI.propertiesGroup)
 local PropertiesYinput = GUI.createTextField(PropertiesYtext.x + 60, PropertiesYtext.y, 100, 15, GUI.propertiesGroup)
 local PropertiesScaleXinput = GUI.createTextField(PropertiesScaleXtext.x + 60, PropertiesScaleXtext.y, 100, 15, GUI.propertiesGroup)
@@ -115,11 +179,16 @@ local PropertiesScaleYinput = GUI.createTextField(PropertiesScaleYtext.x + 60, P
 local PropertiesAlphainput = GUI.createTextField(PropertiesOpacitytext.x + 60, PropertiesOpacitytext.y, 100, 15, GUI.propertiesGroup)
 local PropertiesRotationinput = GUI.createTextField(PropertiesRotationtext.x + 60, PropertiesRotationtext.y, 100, 15, GUI.propertiesGroup)
 
+-- Flag to prevent recursive slider updates
+local ignoreSlider = false
 local function SliderChanged(value)
-    if selectedImage then
-        selectedImage.alpha = value
-        PropertiesAlphainput.text = string.format("%.2f", value)
-    end
+    if ignoreSlider or not selectedImage then return end
+    -- Record alpha undo/redo
+    local oldValue = selectedImage.alpha
+    selectedImage.alpha = value
+    PropertiesAlphainput.text = string.format("%.2f", value)
+    pushUndo({ img = selectedImage, prop = "alpha", old = oldValue, new = value })
+    updateParameters()
 end
 
 local SliderOptions = {
@@ -218,11 +287,13 @@ local function handleInput(event, property, min, max, callback)
             end
 
             if selectedImage then
+                local oldValue = selectedImage[property]
                 selectedImage[property] = value
                 if callback then
                     callback(value)
                 end
                 updateHandles()
+                pushUndo({ img = selectedImage, prop = property, old = oldValue, new = value })
             end
         end
     end
@@ -249,6 +320,10 @@ PropertiesRotationinput:addEventListener("userInput", function(event)
 end)
 
 local function updateParameters()
+    -- If nothing is selected, skip parameter update
+    if not selectedImage and next(multiSelectedImages) == nil then
+        return
+    end
     if panelVisible == false then
         -- existing show animation code...
         GUI.PropertiesPanel.xScale = 0.8
@@ -318,7 +393,10 @@ local function updateParameters()
         PropertiesRotationinput.text = string.format("%.2f", img.rotation)
         PropertiesAlphainput.text    = string.format("%.2f", img.alpha)
         OpacitySlider.alpha = 1
+        -- Update slider without triggering change listener
+        ignoreSlider = true
         OpacitySlider:setValue(img.alpha)
+        ignoreSlider = false
 
         -- Ensure all inputs and slider are visible for single selection
         PropertiesXinput.isVisible       = true
@@ -336,6 +414,9 @@ local function updateParameters()
         checkboxFlipY:setCheckedState(selectedImage.yScale == -1)
     end
 end
+
+-- Expose updateParameters for undo/redo
+_G.updateParameters = updateParameters
 local function makePanelInvisible()
     PropertiesXinput.isVisible = false
     PropertiesRotationinput.isVisible = false
@@ -516,11 +597,30 @@ local function onButtonPanTouch(event)
             GUI.setButtonTint(ButtonPan, true)
             GUI.setButtonTint(ButtonResize, false)
             GUI.setButtonTint(ButtonRotate, false)
-            removeHandles()
+            -- keep existing multi-select handles visible during pan
         end
     end
     return true
 end
+
+-- Pan canvas (and handles) when in pan mode
+local function canvasPanTouch(event)
+    if selectedButton ~= "pan" then return false end
+    if event.phase == "began" then
+        startPanX, startPanY = event.x, event.y
+    elseif event.phase == "moved" then
+        local dx, dy = event.x - startPanX, event.y - startPanY
+        GUI.imageGroup.x = GUI.imageGroup.x + dx
+        GUI.imageGroup.y = GUI.imageGroup.y + dy
+        startPanX, startPanY = event.x, event.y
+        -- Redraw handles in new screen position
+        if _G.removeHandles then removeHandles() end
+        showHandles()
+        updateHandles()
+    end
+    return true
+end
+Runtime:addEventListener("touch", canvasPanTouch)
 local function updateHandlesForm()
     if selectedImage then
         removeHandles()
@@ -1069,19 +1169,19 @@ local function createHandle(x, y)
 end
 -- Function to update handle positions based on the image size, position, and rotation
 updateHandles = function()
+    -- Skip repositioning handles during multi-select; showHandles manages group handles
+    local sel = getSelectedImagesList()
+    if #sel > 1 then return end
     if selectedImage then
         local halfWidth = selectedImage.width / 2
         local halfHeight = selectedImage.height / 2
         local cosRot = math.cos(math.rad(selectedImage.rotation))
         local sinRot = math.sin(math.rad(selectedImage.rotation))
 
-        -- Adjust positions based on the imageGroup's position
-        local groupX, groupY = GUI.imageGroup.x, GUI.imageGroup.y
-
         local function getRotatedPosition(x, y)
             return {
-                x = (selectedImage.x + (x * cosRot - y * sinRot)) * zoomFactor + GUI.imageGroup.x,
-                y = (selectedImage.y + (x * sinRot + y * cosRot)) * zoomFactor + GUI.imageGroup.y
+                x = selectedImage.x + (x * cosRot - y * sinRot),
+                y = selectedImage.y + (x * sinRot + y * cosRot)
             }
         end
 
@@ -1107,10 +1207,10 @@ updateHandles = function()
             rotateHandles.bottomRight.x, rotateHandles.bottomRight.y = bottomRight.x, bottomRight.y
         end
     end
-    for img, _ in pairs(multiSelectedImages) do
-        img.prevX, img.prevY = img.x, img.y
-    end
 end
+
+-- Expose updateHandles for undo/redo
+_G.updateHandles = updateHandles
 local HandleScale = 1.8
 
 local function handleTouch(event)
@@ -1245,6 +1345,17 @@ local function handleTouch(event)
                 local newMinX, newMinY = cx - halfW, cy - halfH
                 local newMaxX, newMaxY = cx + halfW, cy + halfH
 
+                -- Record group resize undo/redo
+                local resizeCmds = {}
+                for _, img in ipairs(handle.selImages) do
+                    table.insert(resizeCmds, {
+                        img = img,
+                        old = { x = img.groupOrigX, y = img.groupOrigY, width = img.groupOrigW, height = img.groupOrigH },
+                        new = { x = img.x,       y = img.y,       width = img.width,       height = img.height }
+                    })
+                end
+                pushUndo({ imgs = resizeCmds })
+
                 -- Commit each image’s new “original” size and position
                 for _, img in ipairs(handle.selImages) do
                     img.groupOrigX, img.groupOrigY = img.x, img.y
@@ -1271,6 +1382,33 @@ local function handleTouch(event)
             -- Redraw box & handles after resize/rotate ends
             showHandles()
             updateHandles()
+            -- Record resize/rotate undo/redo
+            if not handle.isGroupResize then
+                if selectedButton == "resize" then
+                    pushUndo({
+                        img = selectedImage,
+                        old = {
+                            width  = handle.startWidth,
+                            height = handle.startHeight,
+                            x      = handle.startImageX,
+                            y      = handle.startImageY
+                        },
+                        new = {
+                            width  = selectedImage.width,
+                            height = selectedImage.height,
+                            x      = selectedImage.x,
+                            y      = selectedImage.y
+                        }
+                    })
+                elseif selectedButton == "rotate" then
+                    pushUndo({
+                        img = selectedImage,
+                        prop = "rotation",
+                        old  = handle.startRotation,
+                        new  = selectedImage.rotation
+                    })
+                end
+            end
         end
     end
     return true
@@ -1282,29 +1420,6 @@ local function addHandleListeners()
     end
 end
 -- Function to remove handles from the display
-removeHandles = function()
-    for _, handle in pairs(resizeHandles) do
-        handle:removeSelf()
-    end
-    resizeHandles = {}
-    for _, handle in pairs(rotateHandles) do
-        handle:removeSelf()
-    end
-    rotateHandles = {}
-    -- Remove previous group bounding box
-    if groupHandleRect then
-        groupHandleRect:removeSelf()
-        groupHandleRect = nil
-    end
-    -- Remove any group‐resize corner handles
-    for _, h in pairs(groupResizeHandles) do
-        h:removeSelf()
-    end
-    groupResizeHandles = {}
-    -- clearParameters() -- Do not hide properties panel
-end
-
-----------------------------------------------------------------
 -- Keep outlines above every sprite
 ----------------------------------------------------------------
 local function bringOutlinesToFront()
@@ -1324,8 +1439,8 @@ local function bringOutlinesToFront()
 end
 
 showHandles = function()
-    -- First, clear any existing handles or box
-    removeHandles()
+    -- Clear existing handles/outlines (global to avoid local nil)
+    if _G.removeHandles then _G.removeHandles() end
 
     local sel = getSelectedImagesList()
     if #sel > 1 then
@@ -1343,11 +1458,11 @@ showHandles = function()
         local centerX = (minX + maxX) / 2
         local centerY = (minY + maxY) / 2
 
-        -- Draw transparent rectangle with stroke
+        -- Draw transparent rectangle with stroke in world space
         groupHandleRect = display.newRect(GUI.handleGroup, centerX, centerY, boxW, boxH)
-        groupHandleRect:setFillColor(0,0,0,0)       -- transparent fill
+        groupHandleRect:setFillColor(0,0,0,0)
         groupHandleRect.strokeWidth = 2
-        groupHandleRect:setStrokeColor(1,0,0)       -- red outline
+        groupHandleRect:setStrokeColor(1,0,0)
 
         -- Store original for each image
         for _, img in ipairs(sel) do
@@ -1355,7 +1470,7 @@ showHandles = function()
             img.groupOrigW, img.groupOrigH = img.width, img.height
         end
 
-        -- Create four corner handles for group-resize
+        -- Create corner handles for group-resize in world space
         groupResizeHandles = {}
         local corners = {
             { x = minX, y = minY, corner = "topLeft" },
@@ -1374,32 +1489,31 @@ showHandles = function()
             groupResizeHandles[c.corner] = h
         end
 
-
     else
-        -- Single-image mode: use existing logic
+        -- Single-image mode: draw handles in world space
         local img = sel[1]
         if img then
             local halfW, halfH = img.width/2, img.height/2
 
             if selectedButton == "resize" then
-                -- Create resize handles
+                -- Create resize handles at the four corners
                 resizeHandles = {
-                    topLeft     = createHandle(img.x-halfW, img.y-halfH),
-                    topRight    = createHandle(img.x+halfW, img.y-halfH),
-                    bottomLeft  = createHandle(img.x-halfW, img.y+halfH),
-                    bottomRight = createHandle(img.x+halfW, img.y+halfH)
+                    topLeft     = createHandle(img.x - halfW, img.y - halfH),
+                    topRight    = createHandle(img.x + halfW, img.y - halfH),
+                    bottomLeft  = createHandle(img.x - halfW, img.y + halfH),
+                    bottomRight = createHandle(img.x + halfW, img.y + halfH),
                 }
                 for _, h in pairs(resizeHandles) do
                     h:addEventListener("touch", handleTouch)
                 end
 
             elseif selectedButton == "rotate" then
-                -- Create rotate handles
+                -- Create rotate handles at the four corners
                 rotateHandles = {
-                    topLeft     = createHandle(img.x-halfW, img.y-halfH),
-                    topRight    = createHandle(img.x+halfW, img.y-halfH),
-                    bottomLeft  = createHandle(img.x-halfW, img.y+halfH),
-                    bottomRight = createHandle(img.x+halfW, img.y+halfH)
+                    topLeft     = createHandle(img.x - halfW, img.y - halfH),
+                    topRight    = createHandle(img.x + halfW, img.y - halfH),
+                    bottomLeft  = createHandle(img.x - halfW, img.y + halfH),
+                    bottomRight = createHandle(img.x + halfW, img.y + halfH),
                 }
                 for _, h in pairs(rotateHandles) do
                     h:addEventListener("touch", handleTouch)
@@ -1525,6 +1639,7 @@ imageTouch = function(event)
             end
             -- If dragging multiple images, update the bounding box, handles, and panel
             if next(multiSelectedImages) ~= nil then
+                removeHandles()
                 showHandles()
                 updateHandles()
                 updateParameters()
@@ -1537,6 +1652,20 @@ imageTouch = function(event)
         elseif event.phase == "ended" or event.phase == "cancelled" then
             display.getCurrentStage():setFocus(image, nil)
             image.isFocus = false
+            -- Record drag undo/redo for position changes
+            local oldX, oldY = image.startX, image.startY
+            local newX, newY = image.x, image.y
+            if oldX ~= newX or oldY ~= newY then
+                if next(multiSelectedImages) then
+                    local cmds = {}
+                    for img,_ in pairs(multiSelectedImages) do
+                        table.insert(cmds, { img = img, old = { x = img.startX, y = img.startY }, new = { x = img.x, y = img.y } })
+                    end
+                    pushUndo({ imgs = cmds })
+                else
+                    pushUndo({ img = image, old = { x = oldX, y = oldY }, new = { x = newX, y = newY } })
+                end
+            end
             -- Clear stored offsets
             for img,_ in pairs(multiSelectedImages) do
                 img.dragOffsetX, img.dragOffsetY = nil, nil
@@ -1559,6 +1688,7 @@ imageTouch = function(event)
         end
         image.dragOffsetX, image.dragOffsetY = nil, nil
         -- Redraw group box & handles after drag ends
+        removeHandles()
         showHandles()
         updateHandles()
         -- Re‑show the parameters panel after handles redraw
@@ -2383,3 +2513,19 @@ local function onKeyEvent(event)
     return false
 end
 Runtime:addEventListener("key", onKeyEvent)
+-- Keyboard shortcuts for undo/redo
+local function onKey(event)
+
+    if event.phase == "down" and event.keyName == "z"
+       and (event.isCtrlDown or event.isCommandDown) then
+
+        if event.isShiftDown then
+            redo()
+        else
+            undo()
+        end
+        return true
+    end
+    return false
+end
+Runtime:addEventListener("key", onKey)
