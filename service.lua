@@ -178,8 +178,6 @@ end
 
 -- Touch listener for handles to resize the image
 -- Function to update the size and position of the selected image based on the handle and movement
-
-
 M.updateImageSizeAndPosition = function(selectedImage, resizeHandles, handle, dx, dy, proportion, shiftPressed, controlPressed)
     -- Get the rotation angle in radians
     local angle = math.rad(selectedImage.rotation)
@@ -293,5 +291,32 @@ M.updateImageSizeAndPosition = function(selectedImage, resizeHandles, handle, dx
     selectedImage.width = math.abs(newWidth)
     selectedImage.height = math.abs(newHeight)
 end
-
+M.buttonTouch = function(onRelease)
+    return function(self, event)
+        -- Defensive guard for nil or non-touch calls
+        if not event or not event.phase then
+            if onRelease then onRelease() end
+            return true
+        end
+        if event.phase == "began" then
+            display.getCurrentStage():setFocus(self, event.id)
+            -- Optional visual feedback (shrink):
+            self.xScale = (self.InitialScaleX or 1) - 0.05
+            self.yScale = (self.InitialScaleY or 1) - 0.05
+            self.isFocus = true
+        elseif self.isFocus and event.phase == "ended" then
+            -- Restore scale
+            transition.to(self, {
+                xScale     = self.InitialScaleX or 1,
+                yScale     = self.InitialScaleY or 1,
+                time       = 120,
+                transition = easing.outBack
+            })
+            display.getCurrentStage():setFocus(self, nil)
+            self.isFocus = false
+            if onRelease then onRelease() end
+        end
+        return true
+    end
+end
 return M

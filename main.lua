@@ -1,127 +1,89 @@
 -----------------------------------------------------------------------------------------
 -- main.lua
 -----------------------------------------------------------------------------------------
-
 _W = display.contentWidth
 _H = display.contentHeight
-
--- Undo/Redo stacks
-local undoStack, redoStack = {}, {}
-local maxHistory = 20
-
-local function pushUndo(cmd)
-    table.insert(undoStack, cmd)
-    if #undoStack > maxHistory then table.remove(undoStack, 1) end
-    redoStack = {}
-end
-
-
-local function undo()
-    local cmd = table.remove(undoStack)
-    if not cmd then return end
-    if cmd.imgs then
-        -- Restore all recorded properties for each image
-        for _, e in ipairs(cmd.imgs) do
-            for prop, val in pairs(e.old) do
-                e.img[prop] = val
-            end
-        end
-        -- Remove any visible handles/outlines after multi-image undo
-        if removeHandles then removeHandles() end
-    elseif type(cmd.old) == "table" then
-        for k, v in pairs(cmd.old) do
-            cmd.img[k] = v
-        end
-    else
-        cmd.img[cmd.prop] = cmd.old
-    end
-    updateHandles(); updateParameters()
-    table.insert(redoStack, cmd)
-end
-
-
-local function redo()
-    local cmd = table.remove(redoStack)
-    if not cmd then return end
-    if cmd.imgs then
-        -- Reapply all recorded properties for each image
-        for _, e in ipairs(cmd.imgs) do
-            for prop, val in pairs(e.new) do
-                e.img[prop] = val
-            end
-        end
-    elseif type(cmd.new) == "table" then
-        for k, v in pairs(cmd.new) do
-            cmd.img[k] = v
-        end
-    else
-        cmd.img[cmd.prop] = cmd.new
-    end
-    updateHandles(); updateParameters()
-    table.insert(undoStack, cmd)
-end  -- end of redo function
-
-
-
 ----------------------------------------------------------------
 local json = require("json")
 local save = require("saveexport")
 local myPlugin = require("plugin.tinyfiledialogs")
 local Service = require("service")
+local Handles = require("handles")
 local GUI = require("GUIcontrolFunctions")
--- Ensure handles and outlines move with the canvas during pan
-GUI.imageGroup:insert(GUI.handleGroup)
-local Checkbox = require("Checkbox")
+local Checkbox      = require("Checkbox")
+local Undo          = require("undo")
+local globals       = require("globals")
 
 --------------------------------------
 -- Declarations and predeclarations ---
 --------------------------------------
 local tt = transition.to
-local selectedButton = "resize"
-local removeHandles, showHandles, updateHandles, updateTextColors, moveImageUp,
-    moveImageDown, deleteImage, selectedImage, ButtonRotate, ButtonResize,
-    moveImageToTop, moveImageToBottom, saveWorkspace, loadWorkspace,
-    updateImageListOrder, exportWorkspace, gatherImageData, clearWorkspace,
-    imageTouch, addImageToList, reorderImageGroup, selectResize,
-    selectRotate, startPanX, startPanY, LoadFileFunction, addPendingFile, nextStep, getSelectedImagesList,
-    alignVerticalBottomGroup, alignVerticalTopGroup, alignVerticalCenterGroup,
-    alignHorizontalLeftGroup, alignHorizontalRightGroup, alignHorizontalCenterGroup,
-    distributeHorizontalGroup, distributeVerticalGroup,
-    ButtonPan
+-- ──────────────────────────────────────────────────────────────
+-- Helpers: refresh handles • bounding box • move sprite+outline
+-- ──────────────────────────────────────────────────────────────
+local function refreshHandles()
+    if _G.removeHandles then removeHandles() end
+    if _G.showHandles   then showHandles()   end
+    if _G.updateHandles then updateHandles() end
+end
+_G.refreshHandles = refreshHandles
+
+local function getBoundingBox(sel)
+    local minX, minY =  math.huge,  math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    for _, img in ipairs(sel) do
+        minX = math.min(minX, img.x - img.width /2)
+        minY = math.min(minY, img.y - img.height/2)
+        maxX = math.max(maxX, img.x + img.width /2)
+        maxY = math.max(maxY, img.y + img.height/2)
+    end
+    local cx, cy = (minX+maxX)/2, (minY+maxY)/2
+    return minX, minY, maxX, maxY, cx, cy, maxX-minX, maxY-minY
+end
+_G.getBoundingBox = getBoundingBox
+
+local function moveSprite(img, newX, newY)
+    img.x, img.y = newX, newY
+    if img.outline then
+        img.outline.x, img.outline.y = newX, newY
+    end
+end
+_G.moveSprite = moveSprite
+-- ──────────────────────────────────────────────────────────────
+
+selectedButton = "resize"   -- make global so handles.lua can read it
+local updateTextColors, moveImageUp, moveImageDown, deleteImage,
+      ButtonRotate, ButtonResize, moveImageToTop, moveImageToBottom,
+      saveWorkspace, loadWorkspace, updateImageListOrder, exportWorkspace,
+      gatherImageData, clearWorkspace, imageTouch, addImageToList,
+      reorderImageGroup, selectResize, selectRotate, startPanX, startPanY,
+      LoadFileFunction, addPendingFile, nextStep, getSelectedImagesList,
+      alignVerticalBottomGroup, alignVerticalTopGroup, alignVerticalCenterGroup,
+      alignHorizontalLeftGroup, alignHorizontalRightGroup, alignHorizontalCenterGroup,
+      distributeHorizontalGroup, distributeVerticalGroup, ButtonPan
+selectedImage = nil       -- one global copy
+_G.selectedImage = selectedImage
 
 local images = {}
-local handles = {}
-local resizeHandles = {}
-local rotateHandles = {}
-local groupHandleRect  -- outline for multi-select bounding box
+
+-- ------------------------------------------------------------------
+_G.resizeHandles      = _G.resizeHandles      or {}
+_G.rotateHandles      = _G.rotateHandles      or {}
+_G.groupHandleRect    = _G.groupHandleRect    or nil
+_G.groupResizeHandles = _G.groupResizeHandles or {}
+
+-- Convenient local aliases
+local resizeHandles      = _G.resizeHandles
+local rotateHandles      = _G.rotateHandles
+local groupHandleRect    = _G.groupHandleRect
+local groupResizeHandles = _G.groupResizeHandles
+
+-- Table that tracks the current multi‑selection
 local multiSelectedImages = {}
-local groupResizeHandles = {}
 
 -- Clipboard for copy/paste
 local clipboard = nil
-removeHandles = function()
-    for _, handle in pairs(resizeHandles) do
-        handle:removeSelf()
-    end
-    resizeHandles = {}
-    for _, handle in pairs(rotateHandles) do
-        handle:removeSelf()
-    end
-    rotateHandles = {}
-    if groupHandleRect then
-        groupHandleRect:removeSelf()
-        groupHandleRect = nil
-    end
-    if groupResizeHandles then
-        for _, h in pairs(groupResizeHandles) do
-            h:removeSelf()
-        end
-    end
-    groupResizeHandles = {}
-end
 
--- Expose removeHandles globally for showHandles
-_G.removeHandles = removeHandles
 local panelDrawerOpen = true
 local panelOriginalX, panelOriginalY
 local scrollDrawerOpen = true
@@ -141,6 +103,8 @@ local filesScrollView -- pending‑files list (green, top‑right)
 local isPlacing = false
 local placingImage = nil
 
+local mouseWasDown = false  -- state flag
+
 local function placementTouch(event)
     if not isPlacing then return false end
     if event.phase == "began" or event.phase == "moved" then
@@ -157,62 +121,61 @@ local function placementTouch(event)
         addImageToList(placingImage.ID)
         initializeImageOrder()
         selectedImage = placingImage
+        _G.selectedImage = selectedImage
+
         isPlacing = false
         placingImage = nil
         placingImage:removeEventListener("touch", placementTouch)
         Runtime:removeEventListener("mouse", placementMouse)
-        Runtime:removeEventListener("key", placementKey)
-        removeHandles(); showHandles(); updateHandles(); updateTextColors()
+        refreshHandles(); updateTextColors()
     end
     return true
 end
 
-local function placementKey(event)
-    if not isPlacing then return false end
-    if event.phase == "down" and event.keyName == "escape" then
-        placingImage:removeSelf()
-        placingImage = nil
-        isPlacing = false
-        Runtime:removeEventListener("touch", placementTouch)
-        Runtime:removeEventListener("mouse", placementMouse)
-        Runtime:removeEventListener("key", placementKey)
-    end
-    return false
-end
 
--- Handle mouse movement and clicks during placement (desktop)
 local function placementMouse(event)
     if not isPlacing then return false end
-    -- Convert global to local for ghost position
+    -- Always move ghost under cursor (convert to imageGroup‑local)
     local localX = event.x - (GUI.imageGroup and GUI.imageGroup.x or 0)
     local localY = event.y - (GUI.imageGroup and GUI.imageGroup.y or 0)
     placingImage.x, placingImage.y = localX, localY
-    -- Finalize on mouse button release (any button)
-    if event.type == "up" then
-        placingImage.alpha = 1
-        -- Now the new image should respond to touch
-        placingImage:addEventListener("touch", imageTouch)
-        table.insert(images, placingImage)
-        addImageToList(placingImage.ID)
-        initializeImageOrder()
-        selectedImage = placingImage
-        isPlacing = false
-        placingImage = nil
-        Runtime:removeEventListener("mouse", placementMouse)
-        Runtime:removeEventListener("touch", placementTouch)
-        Runtime:removeEventListener("key", placementKey)
-        removeHandles(); showHandles(); updateHandles(); updateTextColors()
+
+    if event.name == "mouse" then
+        -- Track button state
+        if event.isPrimaryButtonDown then
+            mouseWasDown = true
+        elseif mouseWasDown and not event.isPrimaryButtonDown then
+            -- Button was released → finalize placement
+            mouseWasDown = false
+            placingImage.alpha = 1
+            placingImage:addEventListener("touch", imageTouch)
+            table.insert(images, placingImage)
+            addImageToList(placingImage.ID)
+            initializeImageOrder()
+
+            -- Select it
+            selectedImage = placingImage
+            _G.selectedImage = selectedImage
+
+            multiSelectedImages = {}
+            isPlacing = false
+            placingImage = nil
+
+            Runtime:removeEventListener("mouse", placementMouse)
+
+            if _G.removeHandles then removeHandles() end
+            if _G.showHandles then showHandles() end
+            if _G.updateHandles then updateHandles() end
+            if _G.updateTextColors then updateTextColors() end
+        end
     end
     return false
 end
-
-
 
 -- Function to get the currently selected image
 local function getSelectedImage()
     return selectedImage
 end
-
 
 local checkboxFlipX = Checkbox:new{ id = "checkboxFlipX", x = flipXText.x + 19, y = flipXText.y, parentGroup = GUI.propertiesGroup, getSelectedImage = getSelectedImage }
 local checkboxFlipY = Checkbox:new{ id = "checkboxFlipY", x = flipYText.x + 19, y = flipYText.y, parentGroup = GUI.propertiesGroup, getSelectedImage = getSelectedImage }
@@ -224,7 +187,7 @@ if checkboxFlipX and checkboxFlipX.addEventListener then
             local oldValue = selectedImage.xScale
             local newValue = -oldValue
             selectedImage.xScale = newValue
-            pushUndo({ img = selectedImage, prop = "xScale", old = oldValue, new = newValue })
+            Undo.push({ img = selectedImage, prop = "xScale", old = oldValue, new = newValue })
             updateHandles(); updateParameters()
         end
         return true
@@ -237,7 +200,7 @@ if checkboxFlipY and checkboxFlipY.addEventListener then
             local oldValue = selectedImage.yScale
             local newValue = -oldValue
             selectedImage.yScale = newValue
-            pushUndo({ img = selectedImage, prop = "yScale", old = oldValue, new = newValue })
+            Undo.push({ img = selectedImage, prop = "yScale", old = oldValue, new = newValue })
             updateHandles(); updateParameters()
         end
         return true
@@ -259,7 +222,7 @@ local function SliderChanged(value)
     local oldValue = selectedImage.alpha
     selectedImage.alpha = value
     PropertiesAlphainput.text = string.format("%.2f", value)
-    pushUndo({ img = selectedImage, prop = "alpha", old = oldValue, new = value })
+    Undo.push({ img = selectedImage, prop = "alpha", old = oldValue, new = value })
     updateParameters()
 end
 
@@ -296,7 +259,6 @@ GUI.propertiesGroup:insert(PropertiesScaleXinput)
 GUI.propertiesGroup:insert(PropertiesScaleYinput)
 GUI.propertiesGroup:insert(PropertiesAlphainput)
 GUI.propertiesGroup:insert(PropertiesRotationinput)
-
 
 -- Generic Input Handler Function
 local function handleInput(event, property, min, max, callback)
@@ -338,7 +300,7 @@ local function handleInput(event, property, min, max, callback)
                     local scaleX = newW / boxW
                     local scaleY = newH / boxH
                     -- Uniform scale if Shift pressed
-                    if shiftPressed then scaleY = scaleX end
+                    if globals.shiftPressed then scaleY = scaleX end
                     for _, img in ipairs(sel) do
                         -- scale size
                         img.width  = img.groupOrigW * scaleX
@@ -357,7 +319,6 @@ local function handleInput(event, property, min, max, callback)
                 updateTextColors()
                 return
             end
-
             if selectedImage then
                 local oldValue = selectedImage[property]
                 selectedImage[property] = value
@@ -365,7 +326,7 @@ local function handleInput(event, property, min, max, callback)
                     callback(value)
                 end
                 updateHandles()
-                pushUndo({ img = selectedImage, prop = property, old = oldValue, new = value })
+                Undo.push({ img = selectedImage, prop = property, old = oldValue, new = value })
             end
         end
     end
@@ -538,94 +499,6 @@ local function clearParameters()
     PropertiesRotationinput.text = ""
     panelVisible = false
 end
-local function onButtonUpTouch(event)
-    local self = event.target
-    local InitialScaleX = self.InitialScaleX
-    local InitialScaleY = self.InitialScaleY
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = InitialScaleX - 0.05
-        self.yScale = InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = InitialScaleX
-            self.yScale = InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            self.isFocus = false
-            if selectedImage then
-                moveImageUp(selectedImage.ID)
-            end
-        end
-    end
-    return true
-end
-local function onButtonToBottomTouch(event)
-    local self = event.target
-    local InitialScaleX = self.InitialScaleX
-    local InitialScaleY = self.InitialScaleY
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = InitialScaleX - 0.05
-        self.yScale = InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = InitialScaleX
-            self.yScale = InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            self.isFocus = false
-            if selectedImage then
-                moveImageToBottom(selectedImage.ID)
-            end
-        end
-    end
-    return true
-end
-local function onButtonToTopTouch(event)
-    local self = event.target
-    local InitialScaleX = self.InitialScaleX
-    local InitialScaleY = self.InitialScaleY
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = InitialScaleX - 0.05
-        self.yScale = InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = InitialScaleX
-            self.yScale = InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            self.isFocus = false
-            if selectedImage then
-                moveImageToTop(selectedImage.ID)
-            end
-        end
-    end
-    return true
-end
-local function onButtonDownTouch(event)
-    local self = event.target
-    local InitialScaleX = self.InitialScaleX
-    local InitialScaleY = self.InitialScaleY
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = InitialScaleX - 0.05
-        self.yScale = InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = InitialScaleX
-            self.yScale = InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            self.isFocus = false
-            if selectedImage then
-                moveImageDown(selectedImage.ID)
-            end
-        end
-    end
-    return true
-end
 local function onButtonExportTouch(event)
     local self = event.target
     local InitialScaleX = self.InitialScaleX
@@ -694,12 +567,7 @@ local function canvasPanTouch(event)
     return true
 end
 Runtime:addEventListener("touch", canvasPanTouch)
-local function updateHandlesForm()
-    if selectedImage then
-        removeHandles()
-        showHandles()
-    end
-end
+
 local function onButtonSaveTouch(event)
     local self = event.target
     local InitialScaleX = self.InitialScaleX
@@ -755,6 +623,7 @@ getSelectedImagesList = function()
     if #list == 0 and selectedImage then list[1] = selectedImage end
     return list
 end
+_G.getSelectedImagesList = getSelectedImagesList
 
 alignVerticalBottomGroup = function()
     local sel=getSelectedImagesList(); if #sel<2 then return end
@@ -907,7 +776,6 @@ local function addPendingFile(filePath)
             -- Listen for both mouse and touch to move/finalize placement
             Runtime:addEventListener("mouse", placementMouse)
             placingImage:addEventListener("touch", placementTouch)
-            Runtime:addEventListener("key", placementKey)
         end
         return true
     end)
@@ -983,157 +851,6 @@ local function LoadFileFunction(event)
     return true
 end
 
-local function AlignHorizontalLeftFN(event)
-    local self = event.target
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = self.InitialScaleX - 0.05
-        self.yScale = self.InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = self.InitialScaleX
-            self.yScale = self.InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            alignHorizontalLeftGroup()
-            self.isFocus = false
-
-        end
-    end
-    return true
-end
-local function AlignHorizontalRightFN(event)
-    local self = event.target
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = self.InitialScaleX - 0.05
-        self.yScale = self.InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = self.InitialScaleX
-            self.yScale = self.InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            alignHorizontalRightGroup()
-            self.isFocus = false
-
-        end
-    end
-    return true
-end
-local function AlignVerticalBottomFN(event)
-    local self = event.target
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = self.InitialScaleX - 0.05
-        self.yScale = self.InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = self.InitialScaleX
-            self.yScale = self.InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            alignVerticalBottomGroup()
-            self.isFocus = false
-
-        end
-    end
-    return true
-end
-
-local function AlignVerticalTopFN(event)
-    local self = event.target
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = self.InitialScaleX - 0.05
-        self.yScale = self.InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = self.InitialScaleX
-            self.yScale = self.InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            alignVerticalTopGroup()
-            self.isFocus = false
-
-        end
-    end
-    return true
-end
-local function AlignVerticalCenterFN(event)
-    local self = event.target
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = self.InitialScaleX - 0.05
-        self.yScale = self.InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = self.InitialScaleX
-            self.yScale = self.InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            alignVerticalCenterGroup()
-            self.isFocus = false
-
-        end
-    end
-    return true
-end
-local function AlignHorizontalCenterFN(event)
-    local self = event.target
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = self.InitialScaleX - 0.05
-        self.yScale = self.InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus then
-        if event.phase == "ended" or event.phase == "cancelled" then
-            self.xScale = self.InitialScaleX
-            self.yScale = self.InitialScaleY
-            display.getCurrentStage():setFocus(self, nil)
-            alignHorizontalCenterGroup()
-            self.isFocus = false
-
-        end
-    end
-    return true
-end
-
-local function DistributeHorizontalFN(event)
-    local self = event.target
-    local onEnd = (event.phase == "ended" or event.phase == "cancelled")
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = self.InitialScaleX - 0.05
-        self.yScale = self.InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus and onEnd then
-        self.xScale = self.InitialScaleX
-        self.yScale = self.InitialScaleY
-        display.getCurrentStage():setFocus(self, nil)
-        distributeHorizontalGroup()
-        self.isFocus = false
-    end
-    return true
-end
-
-local function DistributeVerticalFN(event)
-    local self = event.target
-    local onEnd = (event.phase == "ended" or event.phase == "cancelled")
-    if event.phase == "began" then
-        display.getCurrentStage():setFocus(self, event.id)
-        self.xScale = self.InitialScaleX - 0.05
-        self.yScale = self.InitialScaleY - 0.05
-        self.isFocus = true
-    elseif self.isFocus and onEnd then
-        self.xScale = self.InitialScaleX
-        self.yScale = self.InitialScaleY
-        display.getCurrentStage():setFocus(self, nil)
-        distributeVerticalGroup()
-        self.isFocus = false
-    end
-    return true
-end
 
 
 local function createButton(imagePath, xScale, yScale, x, y, touchListener)
@@ -1156,18 +873,40 @@ local function createButton(imagePath, xScale, yScale, x, y, touchListener)
     GUI.uiGroup:insert(button)
     return button
 end
--- Create Buttons using the Factory Function
-local ButtonSave = createButton("GFX/save.png", 0.3, 0.3, 20, 20, onButtonSaveTouch)
-local ButtonLoad = createButton("GFX/load.png", 0.3, 0.3, 53, 20, onButtonLoadTouch)
-local ButtonExport = createButton("GFX/export.png", 0.3, 0.3, 86, 20, onButtonExportTouch)
-ButtonResize = createButton("GFX/Cursor.png", 0.3, 0.3, _W / 2 - 30, 20, onButtonResizeTouch)
-ButtonRotate = createButton("GFX/rotate.png", 0.3, 0.3, _W / 2 + 3, 20, onButtonRotateTouch)
-ButtonPan = createButton("GFX/pan.png", 0.3, 0.3, _W / 2 + 90, 20, onButtonPanTouch)
+-- ------------------------------------------------------------
+-- Toolbar buttons – created via shared buttonTouch helper
+-- ------------------------------------------------------------
+local ButtonSave = createButton("GFX/save.png", 0.3, 0.3, 20, 20,
+    Service.buttonTouch(function()
+        save.saveWorkspace(gatherImageData)
+    end))
 
-local ButtonToTop = createButton("GFX/totop.png", 0.3, 0.3, _W - 285, 20, onButtonToTopTouch)
-local ButtonDown = createButton("GFX/up_arrow.png", 0.3, 0.3, _W - 252, 20, onButtonDownTouch)
-local ButtonUp = createButton("GFX/down_arrow.png", 0.3, 0.3, _W - 219, 20, onButtonUpTouch)
-local ButtonToBottom = createButton("GFX/tobottom.png", 0.3, 0.3, _W - 186, 20, onButtonToBottomTouch)
+local ButtonLoad = createButton("GFX/load.png", 0.3, 0.3, 53, 20,
+    Service.buttonTouch(function()
+        loadWorkspace() 
+    end))
+
+local ButtonExport = createButton("GFX/export.png", 0.3, 0.3, 86, 20,
+    Service.buttonTouch(function()
+        save.exportWorkspace(gatherImageData)
+    end))
+
+-- Mode‑toggle buttons keep their tiny dedicated listeners
+ButtonResize = createButton("GFX/Cursor.png", 0.3, 0.3, _W / 2 - 30, 20, onButtonResizeTouch)
+ButtonRotate = createButton("GFX/rotate.png", 0.3, 0.3, _W / 2 + 3,  20, onButtonRotateTouch)
+ButtonPan    = createButton("GFX/pan.png",    0.3, 0.3, _W / 2 + 90, 20, onButtonPanTouch)
+
+-- Layer‑ordering helpers
+local ButtonToTop    = createButton("GFX/totop.png",    0.3, 0.3, _W - 285, 20,
+    function(e) if e.phase == "ended" then if selectedImage then moveImageToTop   (selectedImage.ID); return true end end end)
+local ButtonDown     = createButton("GFX/up_arrow.png", 0.3, 0.3, _W - 252, 20,
+    function(e) if e.phase == "ended" then  if selectedImage then moveImageDown    (selectedImage.ID); return true  end end end)
+local ButtonUp       = createButton("GFX/down_arrow.png",0.3,0.3, _W - 219, 20,
+    function(e) if e.phase == "ended" then  if selectedImage then moveImageUp      (selectedImage.ID); return true  end end end)
+local ButtonToBottom = createButton("GFX/tobottom.png", 0.3, 0.3, _W - 186, 20,
+    function(e) if e.phase == "ended" then  if selectedImage then moveImageToBottom(selectedImage.ID); return true  end end end)
+
+-- Add‑new‑image button (keeps existing LoadFileFunction)
 local ButtonAddNew = createButton("GFX/addnew.png", 0.3, 0.3, _W - 285, 20, LoadFileFunction)
 
 -- Gather our layer-order and AddNew buttons for drawer transitions
@@ -1180,31 +919,52 @@ end
 
 local buttonSize = ButtonSave.width * 0.3
 local buttonSpacing = 3
-    --Align Butotns
-local alignVerticalBottom = createButton("GFX/button_alignVerticalBottom.png", 0.3, 0.3, _W/2-buttonSize*3-buttonSpacing*3, _H - buttonSize, AlignVerticalBottomFN)
-local alignVerticalTop = createButton("GFX/button_alignVerticalTop.png", 0.3, 0.3, _W/2-buttonSize*2-buttonSpacing*2, _H - buttonSize, AlignVerticalTopFN)
-local alignVerticalCenter = createButton("GFX/button_alignVerticalCenter.png", 0.3, 0.3, _W/2-buttonSize -buttonSpacing, _H - buttonSize, AlignVerticalCenterFN)
-local alignHorizontalLeft = createButton("GFX/button_alignHorizontalLeft.png", 0.3, 0.3, _W/2, _H - buttonSize, AlignHorizontalLeftFN)
-local alignHorizontalRight = createButton("GFX/button_alignHorizontalRight.png", 0.3, 0.3, _W/2+buttonSize+buttonSpacing, _H - buttonSize, AlignHorizontalRightFN)
-local alignHorizontalCenter = createButton("GFX/button_alignHorizontalCenter.png", 0.3, 0.3, _W/2+buttonSize*2 +buttonSpacing*2, _H - buttonSize, AlignHorizontalCenterFN)
+-- Alignment buttons – handled through the generic Service.buttonTouch helper
+local alignVerticalBottom = createButton(
+    "GFX/button_alignVerticalBottom.png", 0.3, 0.3,
+    _W/2 - buttonSize*3 - buttonSpacing*3, _H - buttonSize,
+    Service.buttonTouch(alignVerticalBottomGroup)
+)
+local alignVerticalTop = createButton(
+    "GFX/button_alignVerticalTop.png", 0.3, 0.3,
+    _W/2 - buttonSize*2 - buttonSpacing*2, _H - buttonSize,
+    Service.buttonTouch(alignVerticalTopGroup)
+)
+local alignVerticalCenter = createButton(
+    "GFX/button_alignVerticalCenter.png", 0.3, 0.3,
+    _W/2 - buttonSize - buttonSpacing, _H - buttonSize,
+    Service.buttonTouch(alignVerticalCenterGroup)
+)
+local alignHorizontalLeft = createButton(
+    "GFX/button_alignHorizontalLeft.png", 0.3, 0.3,
+    _W/2, _H - buttonSize,
+    Service.buttonTouch(alignHorizontalLeftGroup)
+)
+local alignHorizontalRight = createButton(
+    "GFX/button_alignHorizontalRight.png", 0.3, 0.3,
+    _W/2 + buttonSize + buttonSpacing, _H - buttonSize,
+    Service.buttonTouch(alignHorizontalRightGroup)
+)
+local alignHorizontalCenter = createButton(
+    "GFX/button_alignHorizontalCenter.png", 0.3, 0.3,
+    _W/2 + buttonSize*2 + buttonSpacing*2, _H - buttonSize,
+    Service.buttonTouch(alignHorizontalCenterGroup)
+)
 
-
--- Distribution buttons: inline with align buttons, 10px gap
+-- Distribution buttons
 local distributeButtonY = _H - buttonSize
 local distX1 = alignHorizontalCenter.x + buttonSize + buttonSpacing
 
 local distributeHorizontal = createButton(
-    "GFX/button_horizontalDistribute.png",
-    0.3, 0.3,
+    "GFX/button_horizontalDistribute.png", 0.3, 0.3,
     distX1, distributeButtonY,
-    DistributeHorizontalFN
+    Service.buttonTouch(distributeHorizontalGroup)
 )
 
 local distributeVertical = createButton(
-    "GFX/button_verticalDistribute.png",
-    0.3, 0.3,
+    "GFX/button_verticalDistribute.png", 0.3, 0.3,
     distX1 + buttonSize + buttonSpacing, distributeButtonY,
-    DistributeVerticalFN
+    Service.buttonTouch(distributeVerticalGroup)
 )
 
 
@@ -1217,7 +977,7 @@ GUI.setButtonTint(ButtonDown, false)
 -- Initialize visibility and movement variables
 local visible = false
 -- Track the state of the shift key
-local shiftPressed = false
+
 local controlPressed = false
 
 
@@ -1247,275 +1007,11 @@ selectRotate = function()
         updateHandles()
     end
 end
--- Function to create handles for resizing, rotating, or quadrilateral distortion
-local function createHandle(x, y)
-    local handle
-    if selectedButton == "rotate" then
-        handle = display.newCircle(x, y, 5)
-        handle:setFillColor(1, 0, 0, 0.7)
-    else
-        handle = display.newRect(x, y, 10, 10)
-        handle:setFillColor(0, 1, 0, 0.7)
-    end
-    GUI.handleGroup:insert(handle)
-    handle:toFront()
-    return handle
-end
--- Function to update handle positions based on the image size, position, and rotation
-updateHandles = function()
-    -- Skip repositioning handles during multi-select; showHandles manages group handles
-    local sel = getSelectedImagesList()
-    if #sel > 1 then return end
-    if selectedImage then
-        local halfWidth = selectedImage.width / 2
-        local halfHeight = selectedImage.height / 2
-        local cosRot = math.cos(math.rad(selectedImage.rotation))
-        local sinRot = math.sin(math.rad(selectedImage.rotation))
 
-        local function getRotatedPosition(x, y)
-            return {
-                x = selectedImage.x + (x * cosRot - y * sinRot),
-                y = selectedImage.y + (x * sinRot + y * cosRot)
-            }
-        end
 
-        if selectedButton == "resize" then
-            local topLeft = getRotatedPosition(-halfWidth, -halfHeight)
-            local topRight = getRotatedPosition(halfWidth, -halfHeight)
-            local bottomLeft = getRotatedPosition(-halfWidth, halfHeight)
-            local bottomRight = getRotatedPosition(halfWidth, halfHeight)
-
-            resizeHandles.topLeft.x, resizeHandles.topLeft.y = topLeft.x, topLeft.y
-            resizeHandles.topRight.x, resizeHandles.topRight.y = topRight.x, topRight.y
-            resizeHandles.bottomLeft.x, resizeHandles.bottomLeft.y = bottomLeft.x, bottomLeft.y
-            resizeHandles.bottomRight.x, resizeHandles.bottomRight.y = bottomRight.x, bottomRight.y
-        elseif selectedButton == "rotate" then
-            local topLeft = getRotatedPosition(-halfWidth, -halfHeight)
-            local topRight = getRotatedPosition(halfWidth, -halfHeight)
-            local bottomLeft = getRotatedPosition(-halfWidth, halfHeight)
-            local bottomRight = getRotatedPosition(halfWidth, halfHeight)
-
-            rotateHandles.topLeft.x, rotateHandles.topLeft.y = topLeft.x, topLeft.y
-            rotateHandles.topRight.x, rotateHandles.topRight.y = topRight.x, topRight.y
-            rotateHandles.bottomLeft.x, rotateHandles.bottomLeft.y = bottomLeft.x, bottomLeft.y
-            rotateHandles.bottomRight.x, rotateHandles.bottomRight.y = bottomRight.x, bottomRight.y
-        end
-    end
-end
 
 -- Expose updateHandles for undo/redo
-_G.updateHandles = updateHandles
-local HandleScale = 1.8
 
-local function handleTouch(event)
-    local handle = event.target
-    if event.phase == "began" then
-        if handle.isGroupResize and event.phase == "began" then
-            display.getCurrentStage():setFocus(handle, event.id)
-            handle.isFocus = true
-            -- Record the pointer’s initial position for proper deltas
-            handle.startX = event.x
-            handle.startY = event.y
-            return true
-        end
-        display.getCurrentStage():setFocus(handle, event.id)
-        handle.isFocus = true
-        handle.startX, handle.startY = event.x, event.y
-        handle.startWidth, handle.startHeight = selectedImage.width, selectedImage.height
-        handle.startImageX, handle.startImageY = selectedImage.x, selectedImage.y
-        handle.startRotation = selectedImage.rotation
-        transition.cancel("scaleHandles")
-        tt(handle, {xScale = HandleScale, yScale = HandleScale, time = 150, tag = "scaleHandles"})
-    elseif handle.isFocus then
-        if event.phase == "moved" then
-            if handle.isGroupResize and handle.isFocus and event.phase == "moved" then
-                local h        = handle
-                -- Convert event.x/y (screen) into world coords (accounting for pan & zoom)
-                local worldX = (event.x - GUI.imageGroup.x) / zoomFactor
-                local worldY = (event.y - GUI.imageGroup.y) / zoomFactor
-                local b        = h.boxStart
-                local origMinX = b.minX
-                local origMinY = b.minY
-                local origMaxX = b.maxX
-                local origMaxY = b.maxY
-                local origW    = origMaxX - origMinX
-                local origH    = origMaxY - origMinY
-
-                -- Determine new box corners based on dragged handle (in world space)
-                local newMinX, newMinY = origMinX, origMinY
-                local newMaxX, newMaxY = origMaxX, origMaxY
-                if h.corner == "topLeft" then
-                    newMinX, newMinY = worldX, worldY
-                elseif h.corner == "topRight" then
-                    newMaxX, newMinY = worldX, worldY
-                elseif h.corner == "bottomLeft" then
-                    newMinX, newMaxY = worldX, worldY
-                elseif h.corner == "bottomRight" then
-                    newMaxX, newMaxY = worldX, worldY
-                end
-
-                -- Compute scales for width/height
-                local newW = newMaxX - newMinX
-                local newH = newMaxY - newMinY
-                local scaleX = newW / origW
-                local scaleY = newH / origH
-                -- Uniform scale if Shift held
-                if shiftPressed then scaleY = scaleX end
-
-                -- Scale each image size and reposition relative to box
-                for _, img in ipairs(h.selImages) do
-                    -- new dimensions
-                    img.width  = img.groupOrigW * scaleX
-                    img.height = img.groupOrigH * scaleY
-                    -- normalized positions within original box
-                    local u = (img.groupOrigX - origMinX) / origW
-                    local v = (img.groupOrigY - origMinY) / origH
-                    -- new positions inside new box
-                    img.x = newMinX + u * newW
-                    img.y = newMinY + v * newH
-                    if img.outline then
-                        img.outline.x, img.outline.y = img.x, img.y
-                    end
-                end
-
-                -- Update the bounding-box rectangle (in world space)
-                if groupHandleRect then
-                    groupHandleRect.width  = newW
-                    groupHandleRect.height = newH
-                    groupHandleRect.x = newMinX + newW * 0.5
-                    groupHandleRect.y = newMinY + newH * 0.5
-                end
-
-                -- Reposition corner handles to new corners (in world space)
-                for corner, hdl in pairs(groupResizeHandles) do
-                    if corner == "topLeft" then
-                        hdl.x, hdl.y = newMinX, newMinY
-                    elseif corner == "topRight" then
-                        hdl.x, hdl.y = newMaxX, newMinY
-                    elseif corner == "bottomLeft" then
-                        hdl.x, hdl.y = newMinX, newMaxY
-                    elseif corner == "bottomRight" then
-                        hdl.x, hdl.y = newMaxX, newMaxY
-                    end
-                end
-
-                -- Update the properties panel in real time
-                updateParameters()
-
-                return true
-            end
-            local dx, dy = (event.x - handle.startX) / zoomFactor, (event.y - handle.startY) / zoomFactor
-            if selectedButton == "resize" then
-                local proportion = handle.startWidth / handle.startHeight
-
-                Service.updateImageSizeAndPosition(
-                    selectedImage,
-                    resizeHandles,
-                    handle,
-                    dx,
-                    dy,
-                    proportion,
-                    shiftPressed,
-                    controlPressed,
-                    zoomFactor
-                )
-                updateHandles()
-                updateParameters()
-            elseif selectedButton == "rotate" then
-                local imageCenterX, imageCenterY = selectedImage:localToContent(0, 0)
-                local startAngle = math.atan2(handle.startY - imageCenterY, handle.startX - imageCenterX)
-                local currentAngle = math.atan2(event.y - imageCenterY, event.x - imageCenterX)
-                local angleDelta = math.deg(currentAngle - startAngle)
-                selectedImage.rotation = handle.startRotation + angleDelta
-                updateHandles()
-                updateParameters()
-            end
-        elseif event.phase == "ended" or event.phase == "cancelled" then
-            if handle.isGroupResize then
-                -- End the drag focus
-                handle.isFocus = false
-                display.getCurrentStage():setFocus(handle, nil)
-
-                -- Compute the box’s new extents from the red rect
-                local cx, cy      = groupHandleRect.x, groupHandleRect.y
-                local halfW, halfH = groupHandleRect.width/2, groupHandleRect.height/2
-                local newMinX, newMinY = cx - halfW, cy - halfH
-                local newMaxX, newMaxY = cx + halfW, cy + halfH
-
-                -- Record group resize undo/redo
-                local resizeCmds = {}
-                for _, img in ipairs(handle.selImages) do
-                    table.insert(resizeCmds, {
-                        img = img,
-                        old = { x = img.groupOrigX, y = img.groupOrigY, width = img.groupOrigW, height = img.groupOrigH },
-                        new = { x = img.x,       y = img.y,       width = img.width,       height = img.height }
-                    })
-                end
-                pushUndo({ imgs = resizeCmds })
-
-                -- Commit each image’s new “original” size and position
-                for _, img in ipairs(handle.selImages) do
-                    img.groupOrigX, img.groupOrigY = img.x, img.y
-                    img.groupOrigW, img.groupOrigH = img.width, img.height
-                end
-
-                -- Update this handle’s stored boxStart for the next drag
-                handle.startX, handle.startY = handle.x, handle.y
-                handle.boxStart = {
-                    minX = newMinX, minY = newMinY,
-                    maxX = newMaxX, maxY = newMaxY
-                }
-
-                -- Redraw box & handles after group resize ends
-                showHandles()
-                updateHandles()
-                return true
-            end
-            display.getCurrentStage():setFocus(handle, nil)
-            handle.isFocus = false
-            --handle:scale(1 / HandleScale, 1 / HandleScale) -- Scale back the handle to its original size
-            transition.cancel("scaleHandles")
-            tt(handle, {xScale = 1, yScale = 1, time = 150, tag = "scaleHandles"})
-            -- Redraw box & handles after resize/rotate ends
-            showHandles()
-            updateHandles()
-            -- Record resize/rotate undo/redo
-            if not handle.isGroupResize then
-                if selectedButton == "resize" then
-                    pushUndo({
-                        img = selectedImage,
-                        old = {
-                            width  = handle.startWidth,
-                            height = handle.startHeight,
-                            x      = handle.startImageX,
-                            y      = handle.startImageY
-                        },
-                        new = {
-                            width  = selectedImage.width,
-                            height = selectedImage.height,
-                            x      = selectedImage.x,
-                            y      = selectedImage.y
-                        }
-                    })
-                elseif selectedButton == "rotate" then
-                    pushUndo({
-                        img = selectedImage,
-                        prop = "rotation",
-                        old  = handle.startRotation,
-                        new  = selectedImage.rotation
-                    })
-                end
-            end
-        end
-    end
-    return true
-end
--- Function to add touch listeners to handles
-local function addHandleListeners()
-    for _, handle in pairs(handles) do
-        handle:addEventListener("touch", handleTouch)
-    end
-end
 -- Function to remove handles from the display
 -- Keep outlines above every sprite
 ----------------------------------------------------------------
@@ -1534,94 +1030,9 @@ local function bringOutlinesToFront()
         if img.outline then img.outline:toFront() end
     end
 end
+_G.bringOutlinesToFront = bringOutlinesToFront
 
-showHandles = function()
-    -- Clear existing handles/outlines (global to avoid local nil)
-    if _G.removeHandles then _G.removeHandles() end
 
-    local sel = getSelectedImagesList()
-    if #sel > 1 then
-        -- Draw bounding box around all selected images
-        local minX, minY = math.huge, math.huge
-        local maxX, maxY = -math.huge, -math.huge
-        for _, img in ipairs(sel) do
-            minX = math.min(minX, img.x - img.width/2)
-            minY = math.min(minY, img.y - img.height/2)
-            maxX = math.max(maxX, img.x + img.width/2)
-            maxY = math.max(maxY, img.y + img.height/2)
-        end
-        local boxW = maxX - minX
-        local boxH = maxY - minY
-        local centerX = (minX + maxX) / 2
-        local centerY = (minY + maxY) / 2
-
-        -- Draw transparent rectangle with stroke in world space
-        groupHandleRect = display.newRect(GUI.handleGroup, centerX, centerY, boxW, boxH)
-        groupHandleRect:setFillColor(0,0,0,0)
-        groupHandleRect.strokeWidth = 2
-        groupHandleRect:setStrokeColor(1,0,0)
-
-        -- Store original for each image
-        for _, img in ipairs(sel) do
-            img.groupOrigX, img.groupOrigY = img.x, img.y
-            img.groupOrigW, img.groupOrigH = img.width, img.height
-        end
-
-        -- Create corner handles for group-resize in world space
-        groupResizeHandles = {}
-        local corners = {
-            { x = minX, y = minY, corner = "topLeft" },
-            { x = maxX, y = minY, corner = "topRight" },
-            { x = minX, y = maxY, corner = "bottomLeft" },
-            { x = maxX, y = maxY, corner = "bottomRight" },
-        }
-        for _, c in ipairs(corners) do
-            local h = createHandle(c.x, c.y)
-            h.isGroupResize = true
-            h.corner = c.corner
-            h.startX, h.startY = h.x, h.y
-            h.boxStart = { minX = minX, minY = minY, maxX = maxX, maxY = maxY }
-            h.selImages = sel
-            h:addEventListener("touch", handleTouch)
-            groupResizeHandles[c.corner] = h
-        end
-
-    else
-        -- Single-image mode: draw handles in world space
-        local img = sel[1]
-        if img then
-            local halfW, halfH = img.width/2, img.height/2
-
-            if selectedButton == "resize" then
-                -- Create resize handles at the four corners
-                resizeHandles = {
-                    topLeft     = createHandle(img.x - halfW, img.y - halfH),
-                    topRight    = createHandle(img.x + halfW, img.y - halfH),
-                    bottomLeft  = createHandle(img.x - halfW, img.y + halfH),
-                    bottomRight = createHandle(img.x + halfW, img.y + halfH),
-                }
-                for _, h in pairs(resizeHandles) do
-                    h:addEventListener("touch", handleTouch)
-                end
-
-            elseif selectedButton == "rotate" then
-                -- Create rotate handles at the four corners
-                rotateHandles = {
-                    topLeft     = createHandle(img.x - halfW, img.y - halfH),
-                    topRight    = createHandle(img.x + halfW, img.y - halfH),
-                    bottomLeft  = createHandle(img.x - halfW, img.y + halfH),
-                    bottomRight = createHandle(img.x + halfW, img.y + halfH),
-                }
-                for _, h in pairs(rotateHandles) do
-                    h:addEventListener("touch", handleTouch)
-                end
-            end
-        end
-    end
-
-    -- Finally, ensure outlines stay on top
-    bringOutlinesToFront()
-end
 -- Touch listener for selecting an image
 imageTouch = function(event)
     -- Ignore touch events on images if pan mode is active
@@ -1646,13 +1057,15 @@ imageTouch = function(event)
             img.dragOffsetY = img.y - image.y
         end
 
-        if shiftPressed then
+        if globals.shiftPressed then
             if selectedImage and selectedImage ~= image then
                 -- Add outline to the current selected image and add it to multiSelectedImages
                 bringOutlinesToFront()
                 multiSelectedImages[selectedImage] = true
                 removeHandles()
                 selectedImage = nil
+                _G.selectedImage = nil
+
             end
 
             if multiSelectedImages[image] then
@@ -1681,6 +1094,7 @@ imageTouch = function(event)
             if selectedImage ~= image then
                 removeHandles()
                 selectedImage = image
+                _G.selectedImage = selectedImage
                 showHandles()
                 updateTextColors() -- Update text colors
             end
@@ -1736,9 +1150,7 @@ imageTouch = function(event)
             end
             -- If dragging multiple images, update the bounding box, handles, and panel
             if next(multiSelectedImages) ~= nil then
-                removeHandles()
-                showHandles()
-                updateHandles()
+                refreshHandles()
                 updateParameters()
             end
 
@@ -1758,9 +1170,9 @@ imageTouch = function(event)
                     for img,_ in pairs(multiSelectedImages) do
                         table.insert(cmds, { img = img, old = { x = img.startX, y = img.startY }, new = { x = img.x, y = img.y } })
                     end
-                    pushUndo({ imgs = cmds })
+                    Undo.push({ imgs = cmds })
                 else
-                    pushUndo({ img = image, old = { x = oldX, y = oldY }, new = { x = newX, y = newY } })
+                    Undo.push({ img = image, old = { x = oldX, y = oldY }, new = { x = newX, y = newY } })
                 end
             end
             -- Clear stored offsets
@@ -1773,7 +1185,7 @@ imageTouch = function(event)
 
     if event.phase == "ended" then
         -- Keep the selected images intact
-        if not shiftPressed then
+        if not globals.shiftPressed then
             if selectedImage then
                 updateHandles()
                 updateParameters()
@@ -1785,9 +1197,7 @@ imageTouch = function(event)
         end
         image.dragOffsetX, image.dragOffsetY = nil, nil
         -- Redraw group box & handles after drag ends
-        removeHandles()
-        showHandles()
-        updateHandles()
+        refreshHandles()
         -- Re‑show the parameters panel after handles redraw
         if selectedImage then
             updateParameters()
@@ -1836,118 +1246,6 @@ GUI.uiGroup:insert(filesScrollView)
 
 scrollOriginalX = scrollView.x
 filesOriginalX  = filesScrollView.x
-
--- Key handler for undo/redo and copy/paste
-local function onKey(event)
-    if event.phase == "down" then
-        -- Undo / Redo
-        if event.keyName == "z" and (event.isCtrlDown or event.isCommandDown) then
-            if event.isShiftDown then redo() else undo() end
-            return true
-        end
-        -- Copy selected image(s)
-        if event.keyName == "c" and (event.isCtrlDown or event.isCommandDown) then
-            local sel = getSelectedImagesList()
-            if #sel > 1 then
-                -- Copy multiple images
-                clipboard = { multiple = true, items = {} }
-                for _, img in ipairs(sel) do
-                    table.insert(clipboard.items, {
-                        path     = img.pathToSave or img.path,
-                        name     = img.name,
-                        x        = img.x,
-                        y        = img.y,
-                        width    = img.width,
-                        height   = img.height,
-                        rotation = img.rotation,
-                        alpha    = img.alpha,
-                        xScale   = img.xScale,
-                        yScale   = img.yScale,
-                    })
-                end
-            elseif selectedImage then
-                -- Copy single image
-                clipboard = {
-                    multiple = false,
-                    item = {
-                        path     = selectedImage.pathToSave or selectedImage.path,
-                        name     = selectedImage.name,
-                        x        = selectedImage.x,
-                        y        = selectedImage.y,
-                        width    = selectedImage.width,
-                        height   = selectedImage.height,
-                        rotation = selectedImage.rotation,
-                        alpha    = selectedImage.alpha,
-                        xScale   = selectedImage.xScale,
-                        yScale   = selectedImage.yScale,
-                    }
-                }
-            end
-            return true
-        end
-        -- Paste clipboard image(s)
-        if event.keyName == "v" and (event.isCtrlDown or event.isCommandDown) and clipboard then
-            local newSel = {}
-            local function pasteItem(data)
-                local fileName = Service.get_file_name(data.path)
-                Service.copyFileToSB(
-                    fileName,
-                    Service.getPath(data.path),
-                    fileName,
-                    system.TemporaryDirectory,
-                    true
-                )
-                local uniqueID = os.time() + math.random(1,1000)
-                local newImage = display.newImage(fileName, system.TemporaryDirectory)
-                newImage.pathToSave = data.path
-                newImage.ID         = uniqueID
-                newImage.name       = data.name
-                newImage.xScale     = data.xScale
-                newImage.yScale     = data.yScale
-                newImage.rotation   = data.rotation
-                newImage.alpha      = data.alpha
-                newImage.width      = data.width
-                newImage.height     = data.height
-                newImage.x          = data.x
-                newImage.y          = data.y
-                newImage:addEventListener("touch", imageTouch)
-                GUI.imageGroup:insert(newImage)
-                table.insert(images, newImage)
-                addImageToList(newImage.ID)
-                table.insert(newSel, newImage)
-            end
-            if clipboard.multiple then
-                for _, data in ipairs(clipboard.items) do
-                    pasteItem(data)
-                end
-            elseif clipboard.item then
-                pasteItem(clipboard.item)
-            end
-            initializeImageOrder()
-            -- Select pasted image(s)
-            selectedImage = nil
-            multiSelectedImages = {}
-            for _, img in ipairs(newSel) do
-                multiSelectedImages[img] = true
-            end
-            -- Refresh UI
-            removeHandles(); showHandles(); updateHandles(); updateTextColors()
-            return true
-        end
-
-        -- Toggle both drawers with Tab by invoking existing button handlers
-        if event.keyName == "tab" then
-            -- Simulate scroll drawer toggle via the button
-            scrollToggleBtn:dispatchEvent({ name = "touch", phase = "ended" })
-            -- Simulate panel drawer toggle via the button
-            panelToggleBtn:dispatchEvent({ name = "touch", phase = "ended" })
-            return true
-        end
-    end
-    return false
-end
-Runtime:addEventListener("key", onKey)
-
 
 -- Function to animate layer-order and AddNew buttons on/off screen when toggling scrollViews
 updateScrollToggleVisibility = function(show)
@@ -2033,7 +1331,7 @@ local function showRenamePopup(imageID, textElement)
     end -- Prevent the function from continuing if the image is nil
 
     local renameGroup = display.newGroup()
-    local background = display.newRoundedRect(renameGroup, _W / 2, _H / 2, 300, 200, 5)
+    local background = display.newRoundedRect(renameGroup, _W / 2, _H / 2, 300, 200, 8)
     background:setFillColor(0.8, 0.8, 0.8, 0.8)
     background:addEventListener(
         "touch",
@@ -2171,11 +1469,104 @@ local function moveImageInOrderTableDown(imageID)
     end
 end
 
+
 local scrollViewItemCount = 0
+
+-- Drag‑and‑drop reordering for scroll‑view
+local DRAG_THRESHOLD = 15
+local dragInfo = { isDragging = false, startY = nil, originalIndex = nil, ghostGroup = nil }
+
+-- Insertion line for drag-and-drop reordering
+local insertionLine = nil
+
+local function removeInsertionLine()
+    if insertionLine then
+        insertionLine:removeSelf()
+        insertionLine = nil
+    end
+end
+
+local function drawInsertionLine(index)
+    -- Prepare row data
+    local entries = {}
+    for _, id in ipairs(imageOrder) do
+        local elem = textElements[id]
+        local rowY = elem.group.y
+        local rowH = elem.bg and elem.bg.height or 40
+        table.insert(entries, { y = rowY, h = rowH })
+    end
+    -- Sort by vertical position ascending
+    table.sort(entries, function(a, b) return a.y < b.y end)
+
+    -- Determine new Y position for the insertion line
+    local yPos
+    if index == 1 then
+        yPos = entries[1].y - (entries[1].h / 2)
+    elseif index > #entries then
+        yPos = entries[#entries].y + (entries[#entries].h / 2)
+    else
+        local above = entries[index - 1].y
+        local below = entries[index].y
+        yPos = (above + below) / 2
+    end
+
+    -- Create the line if needed
+    if not insertionLine then
+        insertionLine = display.newRect(0, 0, scrollView.width, 4)
+        insertionLine.anchorX = 0
+        insertionLine.anchorY = 0.5
+        insertionLine:setFillColor(0, 0.5, 1, 0.8)
+        scrollView:insert(insertionLine)  -- add to the scrollView content
+    end
+
+    -- Position and show
+    insertionLine.x = 0
+    insertionLine.y = yPos
+end
+
+local function cloneRowGroup(group)
+    -- Capture the row as a snapshot
+    local snapshot = display.capture(group)
+    snapshot.alpha = 0.5
+    -- Align the snapshot over the original scroll-view row
+    snapshot.x = scrollView.x
+    snapshot.y = scrollView.y - (scrollView.height / 2) + group.y
+    -- Insert into UI group for top-layer visibility
+    GUI.uiGroup:insert(snapshot)
+    return snapshot
+end
+
+local function computeDropIndex(y)
+    local entries = {}
+    for _, id in ipairs(imageOrder) do
+        table.insert(entries, { id = id, y = textElements[id].group.y })
+    end
+    table.sort(entries, function(a, b) return a.y < b.y end)
+    for i, entry in ipairs(entries) do
+        if y < entry.y then
+            return i
+        end
+    end
+    return #entries + 1
+end
+
+local function moveInImageOrder(orig, target)
+    if orig < target then target = target - 1 end
+    local id = table.remove(imageOrder, orig)
+    table.insert(imageOrder, target, id)
+end
+
+local function highlightTargetRow(y)
+    -- Compute insertion index and draw or move the line accordingly
+    local targetIndex = computeDropIndex(y)
+    drawInsertionLine(targetIndex)
+end
 
 
 -- Initialize the image order table when adding a new image
 addImageToList = function(imageID)
+    -- Ensure imagesLookup exists and is updated
+    if not imagesLookup then imagesLookup = {} end
     local group = display.newGroup()
         -- Background for this row
     local bgRect = display.newRect(group, scrollView.width/2, 0, scrollView.width, 40)
@@ -2192,10 +1583,10 @@ addImageToList = function(imageID)
             break
         end
     end
-
     if not image then
         return
     end -- Exit if image not found
+    imagesLookup[imageID] = image
 
     -- Text element for the image name
     local text =
@@ -2296,51 +1687,93 @@ addImageToList = function(imageID)
     end
     -- Add the event listener to the button
     visibleButton:addEventListener("touch", onVisibleButtonTouch)
-    -- Touch on row background selects or multi-selects the image
+    -- Touch on row background: drag-and-drop reorder or select/multiselect
     bgRect:addEventListener("touch", function(event)
-        if event.phase == "ended" then
-            -- Find the corresponding image object
-            local image = nil
-            for _, img in ipairs(images) do
-                if img.ID == imageID then
-                    image = img
-                    break
+        local target = event.target
+        local group = textElements[imageID].group
+        -- Find the image by ID
+        local image = imagesLookup and imagesLookup[imageID] or nil
+        if event.phase == "began" then
+            display.getCurrentStage():setFocus(target, event.id)
+            target.isFocus = true
+            dragInfo.startY = event.y
+            dragInfo.originalIndex = nil
+            dragInfo.isDragging = false
+            removeInsertionLine()
+        elseif target.isFocus and event.phase == "moved" then
+            if not dragInfo.startY then return true end
+            local dy = math.abs(event.y - dragInfo.startY)
+            if not dragInfo.isDragging and dy > DRAG_THRESHOLD then
+                dragInfo.isDragging = true
+                scrollView._scrollingEnabled = false
+                -- capture original index
+                for i, id in ipairs(imageOrder) do
+                    if id == imageID then
+                        dragInfo.originalIndex = i
+                        break
+                    end
                 end
+                dragInfo.ghostGroup = cloneRowGroup(group)
+                -- group.isVisible = false -- do NOT hide the original row
             end
-            if not image then return true end
-
-            if shiftPressed then
-                -- Include the previously selected image in the multi-selection
-                if selectedImage and selectedImage ~= image and not multiSelectedImages[selectedImage] then
-                    bringOutlinesToFront()
-                    multiSelectedImages[selectedImage] = true
-                    removeHandles()
-                    selectedImage = nil
-                end
-                -- Toggle multi-selection for the clicked image, bringing outline to front
-                if multiSelectedImages[image] then
-                    multiSelectedImages[image] = nil
-                else
-                    bringOutlinesToFront()
-                    multiSelectedImages[image] = true
-                end
-                updateTextColors()
-                showHandles()
-                updateHandles()
-                updateParameters()
+            if dragInfo.isDragging then
+                dragInfo.ghostGroup.y = event.y
+                -- Continuously update insertion line using contentToLocal conversion
+                local _, localY = scrollView:contentToLocal(0, event.y)
+                localY = localY + scrollView.height/2
+                highlightTargetRow(localY)
+            end
+        elseif target.isFocus and (event.phase == "ended" or event.phase == "cancelled") then
+            if dragInfo.isDragging then
+                scrollView._scrollingEnabled = true
+                removeInsertionLine()
+                local _, localY = scrollView:contentToLocal(0, event.y)
+                localY = localY + scrollView.height/2
+                local v = computeDropIndex(localY)
+                local count = #imageOrder
+                local newIndex = count - v + 2
+                moveInImageOrder(dragInfo.originalIndex, newIndex)
+                reorderImageGroup()
+                updateImageListOrder()
+                dragInfo.ghostGroup:removeSelf()
+                -- textElements[imageID].group.isVisible = true -- no longer hiding
             else
-                -- Clear any existing multi-selection outlines
-                for img, _ in pairs(multiSelectedImages) do
+                -- normal selection
+                if globals.shiftPressed then
+                    -- Include the previously selected image in the multi-selection
+                    if selectedImage and selectedImage ~= image and not multiSelectedImages[selectedImage] then
+                        bringOutlinesToFront()
+                        multiSelectedImages[selectedImage] = true
+                        removeHandles()
+                        selectedImage = nil
+                        _G.selectedImage = nil
+                    end
+                    -- Toggle multi-selection for the clicked image, bringing outline to front
+                    if multiSelectedImages[image] then
+                        multiSelectedImages[image] = nil
+                    else
+                        bringOutlinesToFront()
+                        multiSelectedImages[image] = true
+                    end
+                    updateTextColors()
+                    showHandles()
+                    updateHandles()
+                    updateParameters()
+                else
+                    -- Clear any existing multi-selection outlines
+                    for img, _ in pairs(multiSelectedImages) do end
+                    multiSelectedImages = {}
+                    -- Single selection: deselect previous, select new
+                    if selectedImage then removeHandles() end
+                    selectedImage = image
+                    _G.selectedImage = selectedImage
+                    showHandles()
+                    updateHandles()
+                    updateTextColors()
                 end
-                multiSelectedImages = {}
-
-                -- Single selection: deselect previous, select new
-                if selectedImage then removeHandles() end
-                selectedImage = image
-                showHandles()
-                updateHandles()
-                updateTextColors()
             end
+            display.getCurrentStage():setFocus(target, nil)
+            target.isFocus = false
         end
         return true
     end)
@@ -2351,6 +1784,7 @@ addImageToList = function(imageID)
     -- Update the scroll view positions
     updateImageListOrder()
 end
+
 updateImageListOrder = function()
     local numImages = #imageOrder
     for i, imageID in ipairs(imageOrder) do
@@ -2481,6 +1915,8 @@ local function backgroundTouch(event)
         removeHandles()
         -- Clear primary selection
         selectedImage = nil
+        _G.selectedImage = nil
+
         -- Remove all outlines from multi-selected images
         -- Clear the multi-selection table
         multiSelectedImages = {}
@@ -2551,7 +1987,7 @@ clearWorkspace = function()
         backgroundColor = {0.9, 0.9, 1, 0.5}
     })
     scrollView.x = _W - 150
-    scrollView.y = _H/2 + halfHeight/2
+    scrollView.y = _H/2 + halfHeight/2+ 40
     GUI.uiGroup:insert(scrollView)
 
     -- Remove & recreate the pending‑files scroll view (top half)
@@ -2660,81 +2096,134 @@ GUI.propertiesGroup.alpha = 1
 -- Also ensure its background panel (if any) is visible
 if GUI.PropertiesPanel then GUI.PropertiesPanel.alpha = 1 end
 
--- Key event listener to track shift key state
-local function onKeyEvent(event)
-    if event.keyName == "leftShift" or event.keyName == "rightShift" then
-        if event.phase == "down" then
-            shiftPressed = true
-        elseif event.phase == "up" then
-            shiftPressed = false
-        end
-    end
-    if event.keyName == "leftControl" or event.keyName == "rightControl" then
-        if event.phase == "down" then
-            controlPressed = true
-        elseif event.phase == "up" then
-            controlPressed = false
-        end
-    end
-    -- Add key event handling for "s", "r", and arrow-key nudging
-    if event.phase == "down" then
-        if event.keyName == "s" then
-            selectResize()
-        elseif event.keyName == "r" then
-            selectRotate()
-        elseif event.keyName == "up" or event.keyName == "down"
-            or event.keyName == "left" or event.keyName == "right" then
 
-            -- Determine nudge step: Ctrl=5 units, Shift=0.1 units, otherwise 1 unit
-            local step = controlPressed and 5 or (shiftPressed and 0.1 or 1)
-            local dx, dy = 0, 0
-            if event.keyName == "up"    then dy = -step
-            elseif event.keyName == "down"  then dy =  step
-            elseif event.keyName == "left"  then dx = -step
-            elseif event.keyName == "right" then dx =  step
-            end
-
-            -- Apply movement to selection (single or multi)
-            if next(multiSelectedImages) ~= nil then
-                for img, _ in pairs(multiSelectedImages) do
-                    img.x = img.x + dx
-                    img.y = img.y + dy
-                    if img.outline then
-                        img.outline.x, img.outline.y = img.x, img.y
-                    end
-                end
-            elseif selectedImage then
-                selectedImage.x = selectedImage.x + dx
-                selectedImage.y = selectedImage.y + dy
-                if selectedImage.outline then
-                    selectedImage.outline.x, selectedImage.outline.y = selectedImage.x, selectedImage.y
-                end
-                updateHandles()
-                updateParameters()
-            end
-
-            -- Refresh UI states
-            updateTextColors()
-            bringOutlinesToFront()
-        end
-    end
-
-    return false
-end
-Runtime:addEventListener("key", onKeyEvent)
--- Keyboard shortcuts for undo/redo
 local function onKey(event)
-
-    if event.phase == "down" and event.keyName == "z"
-       and (event.isCtrlDown or event.isCommandDown) then
-
-        if event.isShiftDown then
-            redo()
-        else
-            undo()
+    if     event.keyName == "leftShift"  or event.keyName == "rightShift"  then
+        globals.shiftPressed   = (event.phase == "down")
+    elseif event.keyName == "leftControl"or event.keyName == "rightControl"
+        or event.keyName == "leftCommand"or event.keyName == "rightCommand" then
+        controlPressed = (event.phase == "down")
+    end
+    if event.phase ~= "down" then return false end
+    if event.keyName == "escape" and isPlacing then
+        if placingImage and placingImage.removeSelf then placingImage:removeSelf() end
+        isPlacing   = false
+        placingImage = nil
+        Runtime:removeEventListener("mouse", placementMouse)
+        return true
+    end
+    if event.keyName == "z" and (event.isCtrlDown or event.isCommandDown) then
+        if event.isShiftDown then Undo.redo() else Undo.undo() end
+        return true
+    end
+    if event.keyName == "c" and (event.isCtrlDown or event.isCommandDown) then
+        local sel = getSelectedImagesList()
+        if #sel > 1 then
+            clipboard = { multiple = true, items = {} }
+            for _, img in ipairs(sel) do
+                clipboard.items[#clipboard.items+1] = {
+                    path     = img.pathToSave or img.path,
+                    name     = img.name,
+                    x        = img.x,
+                    y        = img.y,
+                    width    = img.width,
+                    height   = img.height,
+                    rotation = img.rotation,
+                    alpha    = img.alpha,
+                    xScale   = img.xScale,
+                    yScale   = img.yScale,
+                }
+            end
+        elseif selectedImage then
+            clipboard = {
+                multiple = false,
+                item = {
+                    path     = selectedImage.pathToSave or selectedImage.path,
+                    name     = selectedImage.name,
+                    x        = selectedImage.x,
+                    y        = selectedImage.y,
+                    width    = selectedImage.width,
+                    height   = selectedImage.height,
+                    rotation = selectedImage.rotation,
+                    alpha    = selectedImage.alpha,
+                    xScale   = selectedImage.xScale,
+                    yScale   = selectedImage.yScale,
+                }
+            }
         end
         return true
     end
+    if event.keyName == "v" and (event.isCtrlDown or event.isCommandDown) and clipboard then
+        local newSel = {}
+        local function pasteOne(data)
+            local fileName = Service.get_file_name(data.path)
+            Service.copyFileToSB(fileName, Service.getPath(data.path),
+                                 fileName, system.TemporaryDirectory, true)
+            local img = display.newImage(fileName, system.TemporaryDirectory)
+            img.ID         = os.time() + math.random(1,1000)
+            img.name       = data.name
+            img.pathToSave = data.path
+            img.x, img.y   = data.x, data.y
+            img.width, img.height = data.width, data.height
+            img.xScale, img.yScale = data.xScale, data.yScale
+            img.rotation   = data.rotation
+            img.alpha      = data.alpha
+            img:addEventListener("touch", imageTouch)
+            GUI.imageGroup:insert(img)
+            images[#images+1] = img
+            addImageToList(img.ID)
+            newSel[#newSel+1] = img
+        end
+        if clipboard.multiple then
+            for _,data in ipairs(clipboard.items) do pasteOne(data) end
+        else
+            pasteOne(clipboard.item)
+        end
+        initializeImageOrder()
+        selectedImage = nil
+        _G.selectedImage = nil
+
+        multiSelectedImages = {}
+        for _,img in ipairs(newSel) do multiSelectedImages[img] = true end
+        refreshHandles(); updateTextColors()
+        return true
+    end
+
+    if event.keyName == "s" then selectResize(); return true end
+    if event.keyName == "r" then selectRotate(); return true end
+
+    if event.keyName=="up" or event.keyName=="down"
+       or event.keyName=="left" or event.keyName=="right" then
+
+        local step  = controlPressed and 5 or (globals.shiftPressed and 0.1 or 1)
+        local dx,dy = 0,0
+        if     event.keyName=="up"    then dy=-step
+        elseif event.keyName=="down"  then dy= step
+        elseif event.keyName=="left"  then dx=-step
+        elseif event.keyName=="right" then dx= step
+        end
+
+        local selList = getSelectedImagesList()
+        for _,img in ipairs(selList) do
+            img.x, img.y = img.x+dx, img.y+dy
+            if img.outline then img.outline.x, img.outline.y = img.x, img.y end
+        end
+        updateHandles(); updateParameters()
+        updateTextColors(); bringOutlinesToFront()
+        return true
+    end
+
+    if event.keyName == "tab" then
+        if scrollToggleBtn then
+            scrollToggleBtn:dispatchEvent({ name="touch", phase="ended" })
+        end
+        if panelToggleBtn then
+            panelToggleBtn:dispatchEvent({ name="touch", phase="ended" })
+        end
+        return true
+    end
+
     return false
 end
+
 Runtime:addEventListener("key", onKey)
